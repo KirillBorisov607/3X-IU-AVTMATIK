@@ -854,23 +854,35 @@ EOF
     sleep 3
     systemctl is-active x-ui > /dev/null 2>&1 || die "x-ui service failed to start"
 
-    log "Applying custom settings (port / credentials / path / listen IP)..."
-    x-ui setting -username    "$PANEL_USER"
-    x-ui setting -password    "$PANEL_PASS"
-    x-ui setting -port        "$PANEL_PORT"
-    x-ui setting -webBasePath "${PANEL_PATH}"
+    log "Применяю настройки x-ui..."
+    x-ui setting -username    "$PANEL_USER"    2>/dev/null || true
+    x-ui setting -password    "$PANEL_PASS"    2>/dev/null || true
+    x-ui setting -port        "$PANEL_PORT"    2>/dev/null || true
+    x-ui setting -webBasePath "${PANEL_PATH}"  2>/dev/null || true
+
+    # Fallback: прямая запись в SQLite если x-ui setting не сработал
+    local db="/etc/x-ui/x-ui.db"
+    if [[ -f "$db" ]]; then
+        apt-get install -y -qq sqlite3 2>/dev/null || true
+        sqlite3 "$db" "UPDATE settings SET value='${PANEL_PORT}'   WHERE key='webPort';"    2>/dev/null || true
+        sqlite3 "$db" "UPDATE settings SET value='${PANEL_USER}'   WHERE key='webUsername';" 2>/dev/null || true
+        sqlite3 "$db" "UPDATE settings SET value='${PANEL_PASS}'   WHERE key='webPassword';" 2>/dev/null || true
+        sqlite3 "$db" "UPDATE settings SET value='${PANEL_PATH}'   WHERE key='webBasePath';" 2>/dev/null || true
+        sqlite3 "$db" "UPDATE settings SET value=''                WHERE key='webListen';"   2>/dev/null || true
+        log "Настройки записаны в SQLite"
+    fi
 
     systemctl restart x-ui
-    sleep 4
+    sleep 5
 
-    # Verify x-ui is listening on the expected port
     local tries=0
-    while [[ $tries -lt 6 ]]; do
+    while [[ $tries -lt 8 ]]; do
         ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT} " && break
         sleep 2; (( tries++ )) || true
     done
     if ! ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT} "; then
-        warn "x-ui не слушает порт $PANEL_PORT — проверь: systemctl status x-ui"
+        warn "x-ui не слушает порт $PANEL_PORT. Текущие порты:"
+        ss -tlnp 2>/dev/null | grep x-ui || true
     else
         log "x-ui слушает порт $PANEL_PORT"
     fi

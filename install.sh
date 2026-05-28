@@ -328,7 +328,7 @@ update_system() {
         -o Dpkg::Options::="--force-confdef" \
         curl wget git vim htop unzip \
         net-tools lsof jq ca-certificates \
-        gnupg2 ufw fail2ban iptables-persistent \
+        gnupg2 ufw fail2ban \
         openssl nginx unattended-upgrades \
         2>&1 || die "apt-get install failed — check: cat ${INSTALL_LOG}"
 
@@ -444,7 +444,27 @@ setup_firewall() {
     iptables -A INPUT -p tcp --syn -m limit --limit 30/s --limit-burst 150 -j ACCEPT
     iptables -A INPUT -p tcp --syn -j DROP
 
-    netfilter-persistent save > /dev/null 2>&1
+    # Persist custom iptables rules without iptables-persistent (conflicts with ufw on Ubuntu 24.04)
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+
+    # Restore rules at boot via systemd
+    cat > /etc/systemd/system/iptables-restore.service << 'EOF'
+[Unit]
+Description=Restore custom iptables rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable iptables-restore
+
     ufw --force enable
 }
 

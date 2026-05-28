@@ -385,7 +385,12 @@ EOF
 }
 
 setup_nginx() {
-    log "nginx reverse proxy (hiding panel)..."
+    log "nginx reverse proxy + decoy page..."
+
+    # Install nginx-extras for header manipulation (hides server fingerprint)
+    apt-get install -y -qq nginx libnginx-mod-http-headers-more-filter 2>/dev/null \
+        || apt-get install -y -qq nginx-extras 2>/dev/null \
+        || true
 
     # Self-signed TLS cert
     mkdir -p /etc/nginx/ssl
@@ -395,29 +400,138 @@ setup_nginx() {
         -subj   "/CN=localhost" \
         > /dev/null 2>&1
 
-    # Remove default site
+    # Decoy page — looks like a dev team's internal testing portal
+    mkdir -p /var/www/decoy
+    cat > /var/www/decoy/index.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dev Portal — Internal</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:#0f1117;
+    color:#e2e8f0;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  .card{
+    background:#1a1d27;
+    border:1px solid #2d3148;
+    border-radius:12px;
+    padding:48px 40px;
+    max-width:480px;
+    width:100%;
+    text-align:center;
+    box-shadow:0 24px 48px rgba(0,0,0,.4);
+  }
+  .icon{
+    width:64px;height:64px;
+    background:#1e2235;
+    border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    margin:0 auto 24px;
+    border:2px solid #2d3148;
+  }
+  .icon svg{color:#f59e0b}
+  h1{font-size:1.25rem;font-weight:600;margin-bottom:12px;color:#f1f5f9}
+  p{font-size:.9rem;color:#94a3b8;line-height:1.6;margin-bottom:8px}
+  .badge{
+    display:inline-block;
+    background:#1e2235;
+    border:1px solid #2d3148;
+    border-radius:6px;
+    padding:4px 10px;
+    font-size:.75rem;
+    color:#64748b;
+    margin-top:24px;
+    letter-spacing:.05em;
+  }
+  .btn{
+    display:inline-block;
+    margin-top:28px;
+    padding:10px 24px;
+    background:#1e2235;
+    border:1px solid #374151;
+    border-radius:8px;
+    color:#94a3b8;
+    font-size:.85rem;
+    cursor:pointer;
+    text-decoration:none;
+    transition:border-color .2s,color .2s;
+  }
+  .btn:hover{border-color:#6366f1;color:#e2e8f0}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">
+    <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+  </div>
+  <h1>Restricted Area</h1>
+  <p>This is an internal testing environment for our development team.</p>
+  <p>You don't have access to this resource. If you got here by accident — just close this tab, no harm done.</p>
+  <p style="margin-top:12px;font-size:.8rem;color:#475569">If you're a team member and something looks off, reach out to the infrastructure team.</p>
+  <a class="btn" onclick="window.close();history.back();return false" href="#">Leave this page</a>
+  <div class="badge">ENV: STAGING &nbsp;·&nbsp; BUILD: ci-2024 &nbsp;·&nbsp; ACCESS: RESTRICTED</div>
+</div>
+</body>
+</html>
+HTMLEOF
+
+    # Global nginx hardening: hide version and server name
+    sed -i 's/# server_tokens off;/server_tokens off;/' /etc/nginx/nginx.conf \
+        || grep -q "server_tokens off" /etc/nginx/nginx.conf \
+        || sed -i '/http {/a\\tserver_tokens off;' /etc/nginx/nginx.conf
+
     rm -f /etc/nginx/sites-enabled/default
 
+    # Detect if more_set_headers module is available
+    local header_cmd=""
+    nginx -V 2>&1 | grep -q "headers-more" && header_cmd="more_set_headers \"Server: Apache/2.4.57\";"
+
     cat > /etc/nginx/sites-available/3xui << EOF
-# Drop all connections that don't match the secret path
 server {
     listen ${PANEL_NGINX_PORT} ssl;
     server_name _;
 
-    ssl_certificate     /etc/nginx/ssl/panel.crt;
-    ssl_certificate_key /etc/nginx/ssl/panel.key;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_certificate      /etc/nginx/ssl/panel.crt;
+    ssl_certificate_key  /etc/nginx/ssl/panel.key;
+    ssl_protocols        TLSv1.2 TLSv1.3;
+    ssl_ciphers          ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout  1d;
+    ssl_session_cache    shared:SSL:10m;
 
-    # Log for fail2ban
     access_log /var/log/nginx/3xui-access.log;
+    error_log  /var/log/nginx/3xui-error.log;
 
-    # Block everything by default — return nothing (TCP close)
+    # Remove real server signature, look like something else
+    ${header_cmd}
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # Serve decoy page for any unknown path
+    root /var/www/decoy;
+    index index.html;
+
     location / {
-        return 444;
+        try_files \$uri \$uri/ /index.html;
     }
 
-    # Only the secret path proxies to the panel
+    # Only the secret path reaches the real panel
     location ${PANEL_PATH}/ {
         proxy_pass         http://127.0.0.1:${PANEL_PORT};
         proxy_http_version 1.1;

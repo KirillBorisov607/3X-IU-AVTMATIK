@@ -21,16 +21,18 @@ if [[ -z "${INSIDE_SCREEN:-}" ]]; then
         echo "  Запуск в tmux (сессия: 3xui)..."
         echo "  Если соединение оборвётся: переподключись и выполни --> tmux attach -t 3xui"
         echo ""
-        # Do NOT use exec — exec replaces bash and causes MobaXterm to disconnect
-        INSIDE_SCREEN=1 tmux new-session -s 3xui "bash $TMPSCRIPT"
+        # Kill stale session from a previous run (if any)
+        tmux kill-session -t 3xui 2>/dev/null || true
+        # INSIDE_SCREEN must be inside the command string — tmux doesn't inherit
+        # env-var prefixes; the variable would be unset inside the new session
+        tmux new-session -s 3xui "INSIDE_SCREEN=1 bash $TMPSCRIPT"
         exit 0
     elif command -v screen &>/dev/null; then
         echo ""
         echo "  Запуск в screen (сессия: 3xui-install)..."
         echo "  Если соединение оборвётся: переподключись и выполни --> screen -r 3xui-install"
         echo ""
-        # Do NOT use exec — exec replaces bash and causes MobaXterm to disconnect
-        INSIDE_SCREEN=1 screen -S 3xui-install bash "$TMPSCRIPT"
+        screen -S 3xui-install bash -c "INSIDE_SCREEN=1 bash $TMPSCRIPT"
         exit 0
     else
         echo "  [!] tmux/screen недоступны, запуск напрямую"

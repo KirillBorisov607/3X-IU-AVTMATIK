@@ -44,7 +44,11 @@ FAIL_MARKER="/tmp/3xui-FAILED.txt"
 log()  { echo -e "${GREEN}[+]${NC} $*"; }
 info() { echo -e "${BLUE}[i]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
-die()  { echo -e "${RED}[x]${NC} $*" >&2; exit 1; }
+die()  {
+    echo -e "${RED}[x]${NC} $*" >&2
+    { echo "FAILED at $(date)"; echo "die: $*"; echo ""; echo "Last 40 lines:"; tail -n 40 "$INSTALL_LOG" 2>/dev/null; } > "$FAIL_MARKER"
+    exit 1
+}
 sep()  { echo -e "${CYAN}──────────────────────────────────────────────${NC}"; }
 
 # Tee stdout+stderr to log. Safe without pipefail.
@@ -292,38 +296,33 @@ prompt_panel() {
 # =============================================================
 
 update_system() {
-    log "apt update & upgrade..."
-
-    # Export for all subprocesses in this function
     export DEBIAN_FRONTEND=noninteractive
     export UCF_FORCE_CONFFOLD=1
     export NEEDRESTART_MODE=a
     export NEEDRESTART_SUSPEND=1
 
-    # Ubuntu 24.04 (Noble): disable needrestart interactive prompts
-    mkdir -p /etc/needrestart/conf.d
-    echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
+    # Silence needrestart (Ubuntu 22.04/24.04) — all || true so missing files don't crash
+    log "[1/3] Preparing apt..."
+    mkdir -p /etc/needrestart/conf.d 2>/dev/null || true
+    printf '$nrconf{restart} = '"'"'a'"'"';\n' \
+        > /etc/needrestart/conf.d/99-auto.conf 2>/dev/null || true
     if [[ -f /etc/needrestart/needrestart.conf ]]; then
-        sed -i "s/^#\?\$nrconf{restart}.*$/\$nrconf{restart} = 'a';/" \
+        sed -i "s/^#\?\\\$nrconf{restart}.*$/\\\$nrconf{restart} = 'a';/" \
             /etc/needrestart/needrestart.conf 2>/dev/null || true
     fi
+    # Pre-seed debconf for iptables-persistent — || true because package may not exist yet
+    echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" \
+        | debconf-set-selections 2>/dev/null || true
+    echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" \
+        | debconf-set-selections 2>/dev/null || true
 
-    # Pre-answer debconf for iptables-persistent (avoids interactive save dialog)
-    if command -v debconf-set-selections &>/dev/null; then
-        echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" \
-            | debconf-set-selections
-        echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" \
-            | debconf-set-selections
-    fi
+    log "[2/3] apt-get update..."
+    apt-get update -qq 2>&1 || warn "apt-get update had errors, continuing"
 
-    apt-get update -qq || warn "apt-get update had errors, continuing"
+    # Skip full upgrade — unattended-upgrades (installed below) handles ongoing security patches.
+    # Full upgrade is the #1 cause of script crashes: kernel updates, grub prompts, OOM on small VPS.
 
-    apt-get upgrade -y \
-        -o Dpkg::Options::="--force-confold" \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confmiss" \
-        || warn "apt-get upgrade had errors, continuing"
-
+    log "[3/3] Installing required packages..."
     apt-get install -y \
         -o Dpkg::Options::="--force-confold" \
         -o Dpkg::Options::="--force-confdef" \
@@ -331,7 +330,7 @@ update_system() {
         net-tools lsof jq ca-certificates \
         gnupg2 ufw fail2ban iptables-persistent \
         openssl nginx unattended-upgrades \
-        || die "Package install failed. Check: cat ${INSTALL_LOG}"
+        2>&1 || die "apt-get install failed — check: cat ${INSTALL_LOG}"
 
     log "Packages ready."
 }

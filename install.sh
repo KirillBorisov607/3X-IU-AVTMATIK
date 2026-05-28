@@ -25,6 +25,7 @@ NEW_SSH_PORT=2222
 OLD_SSH_PORT=22
 SERVER_LABEL=""
 LOG_FILE="/root/3xui-credentials.log"
+INBOUND_PORTS=()   # populated during prompt_config
 
 # =============================================================
 # 1. PREFLIGHT
@@ -77,11 +78,25 @@ prompt_config() {
     read -rp "$(echo -e "  ${YELLOW}Server label${NC} [hostname]: ")" _in
     SERVER_LABEL="${_in:-$(hostname -s)}"
 
+    echo ""
+    info "  Inbound ports for proxy traffic (VLESS, VMess, Trojan, etc.)"
+    info "  Format: PORT or PORT/tcp or PORT/udp  —  space-separated"
+    info "  Example: 443 8443 2087/tcp 443/udp"
+    read -rp "$(echo -e "  ${YELLOW}Inbound ports${NC} [skip]: ")" _in
+    if [[ -n "$_in" ]]; then
+        read -ra INBOUND_PORTS <<< "$_in"
+    fi
+
     sep
-    info "  SSH port:   $NEW_SSH_PORT"
-    info "  Panel port: $PANEL_PORT"
-    info "  Panel user: $PANEL_USER"
-    info "  Label:      $SERVER_LABEL"
+    info "  SSH port:      $NEW_SSH_PORT"
+    info "  Panel port:    $PANEL_PORT"
+    info "  Panel user:    $PANEL_USER"
+    info "  Label:         $SERVER_LABEL"
+    if [[ ${#INBOUND_PORTS[@]} -gt 0 ]]; then
+        info "  Inbound ports: ${INBOUND_PORTS[*]}"
+    else
+        info "  Inbound ports: (none — add manually with ufw allow)"
+    fi
     sep
     read -rp "  Proceed? [y/N]: " _confirm
     [[ "${_confirm,,}" == "y" ]] || die "Aborted."
@@ -228,6 +243,30 @@ setup_firewall() {
 
     # 3x-ui panel
     ufw allow "${PANEL_PORT}/tcp" comment "3x-ui panel"
+
+    # Inbound ports for proxy traffic
+    for entry in "${INBOUND_PORTS[@]}"; do
+        # Normalize: if no slash, default to tcp
+        if [[ "$entry" == */* ]]; then
+            port="${entry%/*}"
+            proto="${entry##*/}"
+        else
+            port="$entry"
+            proto="tcp"
+        fi
+
+        if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 ]] || [[ "$port" -gt 65535 ]]; then
+            warn "Skipping invalid port: $entry"
+            continue
+        fi
+        if [[ "$proto" != "tcp" && "$proto" != "udp" ]]; then
+            warn "Skipping invalid protocol: $entry (use tcp or udp)"
+            continue
+        fi
+
+        ufw allow "${port}/${proto}" comment "inbound"
+        log "Opened port ${port}/${proto}"
+    done
 
     # Block NULL, XMAS, FIN port scans (via iptables, before UFW)
     iptables -I INPUT -p tcp --tcp-flags ALL NONE -j DROP
@@ -389,6 +428,9 @@ print_summary() {
     printf "  %-16s %s\n" "Panel URL:"   "http://$PUBLIC_IP:$PANEL_PORT${PANEL_PATH}"
     printf "  %-16s %s\n" "Username:" "$PANEL_USER"
     printf "  %-16s %s\n" "Password:" "$PANEL_PASS"
+    if [[ ${#INBOUND_PORTS[@]} -gt 0 ]]; then
+        printf "  %-16s %s\n" "Open ports:" "${INBOUND_PORTS[*]}"
+    fi
     sep
     echo -e "${YELLOW}  CHECKLIST:${NC}"
     echo "   1. Test new SSH:   ssh -p $NEW_SSH_PORT root@$PUBLIC_IP"

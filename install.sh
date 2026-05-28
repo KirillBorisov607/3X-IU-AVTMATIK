@@ -264,12 +264,21 @@ update_system() {
     mkdir -p /etc/needrestart/conf.d
     echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
 
-    # apt-get update already ran in the screen-relaunch block
+    apt-get update -qq
+
+    # Suppress ALL interactive prompts: grub, needrestart, systemd, ucf
+    UCF_FORCE_CONFFOLD=1 \
+    NEEDRESTART_MODE=a \
+    NEEDRESTART_SUSPEND=1 \
     apt-get upgrade -y \
         -o Dpkg::Options::="--force-confold" \
-        -o Dpkg::Options::="--force-confdef"
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confmiss" || true
+
+    UCF_FORCE_CONFFOLD=1 \
     apt-get install -y \
         -o Dpkg::Options::="--force-confold" \
+        -o Dpkg::Options::="--force-confdef" \
         curl wget git vim htop unzip \
         net-tools lsof jq ca-certificates \
         gnupg2 ufw fail2ban iptables-persistent \

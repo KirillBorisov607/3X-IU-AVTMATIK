@@ -233,9 +233,13 @@ ROOT_SSH_PASS=""
 LOG_FILE="/root/3xui-credentials.log"
 SSH_SVC="ssh"   # detected in harden_ssh(); Ubuntu 24.04 = ssh, older = sshd
 
-prompt_panel() {
+# ── PHASE 1: Server setup prompts ────────────────────────────
+prompt_server() {
     sep
-    read -rp "  $(s ask_ssh)"         _in; NEW_SSH_PORT="${_in:-2222}"
+    echo -e "  ${BOLD}═══ ШАГ 1: Настройка сервера ═══${NC}"
+    sep
+    read -rp "  $(s ask_label)"   _in; SERVER_LABEL="${_in:-$(hostname -s)}"
+    read -rp "  $(s ask_ssh)"     _in; NEW_SSH_PORT="${_in:-2222}"
 
     read -rsp "  $(s ask_ssh_pass)" _in; echo
     if [[ -z "$_in" ]]; then
@@ -245,11 +249,30 @@ prompt_panel() {
         ROOT_SSH_PASS="$_in"
     fi
 
+    echo ""
+    info "  $(s inbound_hint)"
+    read -rp "  $(s ask_inbound)" _in
+    [[ -n "$_in" ]] && IFS=' ' read -ra INBOUND_PORTS <<< "$_in"
+
+    sep
+    info "  Сервер:   $SERVER_LABEL"
+    info "  SSH порт: $NEW_SSH_PORT"
+    [[ ${#INBOUND_PORTS[@]} -gt 0 ]] && info "  Inbounds: ${INBOUND_PORTS[*]}"
+    sep
+    read -rp "  $(s confirm)" _c
+    [[ "${_c,,}" == "y" ]] || die "$(s aborted)"
+}
+
+# ── PHASE 2: Panel setup prompts ─────────────────────────────
+prompt_panel() {
+    sep
+    echo -e "  ${BOLD}═══ ШАГ 2: Настройка панели 3x-ui ═══${NC}"
+    sep
     read -rp "  $(s ask_panel_port)"  _in; PANEL_PORT="${_in:-2053}"
     read -rp "  $(s ask_nginx_port)"  _in; PANEL_NGINX_PORT="${_in:-8443}"
     read -rp "  $(s ask_user)"        _in; PANEL_USER="${_in:-admin}"
 
-    read -rp "  $(s ask_pass)" -s _in; echo
+    read -rsp "  $(s ask_pass)" _in; echo
     if [[ -z "$_in" ]]; then
         PANEL_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 20)
         info "  $(s gen_pass)${BOLD}${PANEL_PASS}${NC}"
@@ -259,21 +282,11 @@ prompt_panel() {
 
     PANEL_PATH="/$(openssl rand -hex 10)"
 
-    read -rp "  $(s ask_label)" _in; SERVER_LABEL="${_in:-$(hostname -s)}"
-
-    echo ""
-    info "  $(s inbound_hint)"
-    read -rp "  $(s ask_inbound)" _in
-    # IFS=$'\n\t' is active — override to space so "443 80 8080" splits correctly
-    [[ -n "$_in" ]] && IFS=' ' read -ra INBOUND_PORTS <<< "$_in"
-
     sep
-    info "  SSH:          $NEW_SSH_PORT"
-    info "  Panel internal: $PANEL_PORT"
-    info "  Panel HTTPS:  $PANEL_NGINX_PORT"
-    info "  Panel path:   $PANEL_PATH"
-    info "  User:         $PANEL_USER"
-    [[ ${#INBOUND_PORTS[@]} -gt 0 ]] && info "  Inbounds:     ${INBOUND_PORTS[*]}"
+    info "  Порт панели:  $PANEL_PORT"
+    info "  Порт nginx:   $PANEL_NGINX_PORT"
+    info "  Путь панели:  $PANEL_PATH"
+    info "  Логин:        $PANEL_USER"
     sep
     read -rp "  $(s confirm)" _c
     [[ "${_c,,}" == "y" ]] || die "$(s aborted)"
@@ -782,42 +795,54 @@ verify_ssh() {
     sep
     warn "  Перезапускаю SSH на порту $NEW_SSH_PORT..."
     if systemctl restart "$SSH_SVC" 2>/dev/null; then
-        log "  SSH перезапущен."
+        log "  SSH перезапущен успешно."
     else
         warn "  Не удалось перезапустить $SSH_SVC — попробуй вручную: systemctl restart $SSH_SVC"
     fi
+
     echo ""
-    warn "  Открой НОВУЮ вкладку MobaXterm и проверь:"
-    echo -e "  ${BOLD}  ssh -p $NEW_SSH_PORT root@$ip${NC}"
+    echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║        СЕРВЕР ГОТОВ — ПРОВЕРЬ SSH                ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    read -rp "  Подключение на порту $NEW_SSH_PORT работает? [y/N]: " _ok
+    echo -e "  Сервер:   ${BOLD}$SERVER_LABEL${NC}  ($ip)"
+    echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
+    echo -e "  Пароль:   ${BOLD}${ROOT_SSH_PASS}${NC}"
+    echo ""
+    echo -e "${YELLOW}  Открой НОВУЮ вкладку и подключись на порту $NEW_SSH_PORT!${NC}"
+    echo -e "${YELLOW}  Не закрывай эту сессию пока не убедишься что SSH работает.${NC}"
+    echo ""
+    read -rp "  SSH на порту $NEW_SSH_PORT работает? [y/N]: " _ok
     if [[ "${_ok,,}" != "y" ]]; then
         warn "  Откатываю SSH на порт $OLD_SSH_PORT..."
         sed -i "s/^Port $NEW_SSH_PORT/Port $OLD_SSH_PORT/" \
             /etc/ssh/sshd_config.d/99-hardened.conf 2>/dev/null || true
         systemctl restart "$SSH_SVC" 2>/dev/null || true
         ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
-        warn "  SSH откатан на порт $OLD_SSH_PORT."
-        warn "  Запусти скрипт заново когда разберёшься с SSH."
-        return 0
+        warn "  SSH откатан на порт $OLD_SSH_PORT. Разберись с SSH и запусти скрипт заново."
+        exit 1
     fi
-    log "SSH проверен на порту $NEW_SSH_PORT."
+    log "SSH проверен. Удаляю старый порт 22 из UFW."
     ufw delete allow "22/tcp" 2>/dev/null || true
     sep
 }
 
 run_panel() {
-    prompt_panel
+    # ── PHASE 1: Server hardening ──────────────────────────────
+    prompt_server
     update_system
     harden_sysctl
     harden_ssh
     setup_firewall
     setup_fail2ban
+    setup_autoupdates
+    verify_ssh          # show SSH info + ask user to verify before continuing
+
+    # ── PHASE 2: Panel installation ────────────────────────────
+    prompt_panel
     setup_nginx
     install_3xui
-    setup_autoupdates
-    print_panel_summary   # show credentials BEFORE ssh restart so they're never lost
-    verify_ssh
+    print_panel_summary
 }
 
 # =============================================================

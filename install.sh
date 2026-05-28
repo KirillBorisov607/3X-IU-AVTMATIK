@@ -366,11 +366,11 @@ update_system() {
 }
 
 create_admin_user() {
-    log "Создаю пользователя $ADMIN_USER..."
     if id "$ADMIN_USER" &>/dev/null; then
         echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
-        log "Пользователь существует — пароль обновлён"
+        log "[skip] Пользователь $ADMIN_USER уже существует — пароль обновлён"
     else
+        log "Создаю пользователя $ADMIN_USER..."
         useradd -m -s /bin/bash "$ADMIN_USER" || die "useradd failed"
         echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
         log "Пользователь $ADMIN_USER создан"
@@ -381,6 +381,10 @@ create_admin_user() {
 }
 
 harden_sysctl() {
+    if grep -q "# === 3XUI ===" /etc/sysctl.conf 2>/dev/null; then
+        log "[skip] sysctl уже настроен"
+        return 0
+    fi
     log "sysctl + лимиты + swap..."
 
     sed -i '/# === 3XUI ===/,/# === END 3XUI ===/d' /etc/sysctl.conf 2>/dev/null || true
@@ -447,6 +451,12 @@ EOF
 }
 
 harden_ssh() {
+    if ss -tlnp 2>/dev/null | grep -qE ":${NEW_SSH_PORT}\b" && \
+       ! ss -tlnp 2>/dev/null | grep -qE ":${OLD_SSH_PORT}\b"; then
+        log "[skip] SSH уже на порту $NEW_SSH_PORT"
+        SSH_SVC="ssh"
+        return 0
+    fi
     log "SSH hardening (port $NEW_SSH_PORT)..."
 
     cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%s)" 2>/dev/null || true
@@ -507,6 +517,17 @@ EOF
 }
 
 setup_firewall() {
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        log "[skip] UFW уже активен — добавляю только недостающие порты"
+        ufw allow "${NEW_SSH_PORT}/tcp" comment "SSH" 2>/dev/null || true
+        ufw deny  "${PANEL_PORT}/tcp"   comment "3x-ui panel direct - blocked" 2>/dev/null || true
+        ufw allow "${PANEL_NGINX_PORT}/tcp" comment "3x-ui panel HTTPS" 2>/dev/null || true
+        for entry in "${INBOUND_PORTS[@]}"; do
+            [[ "$entry" == */* ]] && port="${entry%/*}" proto="${entry##*/}" || port="$entry" proto="tcp"
+            ufw allow "${port}/${proto}" comment "inbound" 2>/dev/null || true
+        done
+        return 0
+    fi
     log "UFW + iptables..."
     ufw --force reset
     ufw default deny incoming
@@ -573,6 +594,10 @@ EOF
 }
 
 setup_fail2ban() {
+    if [[ -f /etc/fail2ban/jail.local ]] && grep -q "3xui" /etc/fail2ban/jail.local 2>/dev/null; then
+        log "[skip] Fail2ban уже настроен"
+        return 0
+    fi
     log "Fail2ban..."
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
@@ -625,6 +650,10 @@ EOF
 }
 
 setup_nginx() {
+    if [[ -f /etc/nginx/sites-enabled/3xui ]] && nginx -t 2>/dev/null; then
+        log "[skip] nginx уже настроен"
+        return 0
+    fi
     log "nginx reverse proxy + decoy page..."
 
     # Install nginx-extras for header manipulation (hides server fingerprint)
@@ -747,8 +776,7 @@ HTMLEOF
 
     cat > /etc/nginx/sites-available/3xui << EOF
 server {
-    listen ${PANEL_NGINX_PORT} ssl;
-    http2  on;
+    listen ${PANEL_NGINX_PORT} ssl http2;
     server_name _;
 
     ssl_certificate      /etc/nginx/ssl/panel.crt;
@@ -809,6 +837,16 @@ EOF
 }
 
 install_3xui() {
+    if systemctl is-active x-ui > /dev/null 2>&1; then
+        log "[skip] x-ui уже запущен — применяю настройки..."
+        x-ui setting -username    "$PANEL_USER"
+        x-ui setting -password    "$PANEL_PASS"
+        x-ui setting -port        "$PANEL_PORT"
+        x-ui setting -webBasePath "${PANEL_PATH}"
+        systemctl restart x-ui
+        sleep 3
+        return 0
+    fi
     log "Installing 3x-ui (official installer — ignore the URL it prints, we override everything after)..."
     bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) << 'EOF'
 

@@ -5,57 +5,6 @@
 # Run: bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 # =============================================================
 
-# Re-launch inside tmux/screen so SSH restart doesn't kill the session
-if [[ -z "${INSIDE_SCREEN:-}" ]]; then
-    apt-get update -qq 2>/dev/null || true
-    apt-get install -y -qq tmux screen 2>/dev/null || true
-
-    TMPSCRIPT=$(mktemp /tmp/3xui-install-XXXX.sh)
-    curl -fsSL \
-        https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh \
-        -o "$TMPSCRIPT"
-    chmod +x "$TMPSCRIPT"
-
-    # Write a wrapper that exports INSIDE_SCREEN before running the main script.
-    # Embedding "VAR=1 cmd" in a tmux command string is unreliable — the shell
-    # tmux uses to interpret it may not export the variable properly.
-    WRAPPER=$(mktemp /tmp/3xui-start-XXXX.sh)
-    cat > "$WRAPPER" << WEOF
-#!/usr/bin/env bash
-export INSIDE_SCREEN=1
-bash "$TMPSCRIPT"
-EXIT_CODE=\$?
-if [[ \$EXIT_CODE -ne 0 ]]; then
-    echo ""
-    echo "=== Script exited with code \$EXIT_CODE ==="
-    echo "Check: cat /tmp/3xui-FAILED.txt"
-    echo "Full log: cat /tmp/3xui-install.log"
-    sleep 15
-fi
-WEOF
-    chmod +x "$WRAPPER"
-
-    if command -v tmux &>/dev/null; then
-        echo ""
-        echo "  Запуск в tmux (сессия: 3xui)..."
-        echo "  Если соединение оборвётся: переподключись и выполни --> tmux attach -t 3xui"
-        echo ""
-        tmux kill-session -t 3xui 2>/dev/null || true
-        tmux new-session -s 3xui "bash $WRAPPER"
-        exit 0
-    elif command -v screen &>/dev/null; then
-        echo ""
-        echo "  Запуск в screen (сессия: 3xui-install)..."
-        echo "  Если соединение оборвётся: переподключись и выполни --> screen -r 3xui-install"
-        echo ""
-        screen -S 3xui-install "bash $WRAPPER"
-        exit 0
-    else
-        echo "  [!] tmux/screen недоступны, запуск напрямую"
-        INSIDE_SCREEN=1 bash "$TMPSCRIPT"
-        exit 0
-    fi
-fi
 
 set -eu
 IFS=$'\n\t'

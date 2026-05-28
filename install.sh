@@ -5,30 +5,37 @@
 # Run: bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 # =============================================================
 
-# Re-launch inside screen so SSH restart doesn't kill the session
+# Re-launch inside tmux/screen so SSH restart doesn't kill the session
 if [[ -z "${INSIDE_SCREEN:-}" ]]; then
-    # Update apt cache first so screen can be installed on a fresh server
     apt-get update -qq 2>/dev/null || true
-    apt-get install -y -qq screen 2>/dev/null || true
+    apt-get install -y -qq tmux screen 2>/dev/null || true
 
     TMPSCRIPT=$(mktemp /tmp/3xui-install-XXXX.sh)
-    # When piped via bash <(curl ...), $0 is a file descriptor — download fresh copy
     curl -fsSL \
         https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh \
         -o "$TMPSCRIPT"
     chmod +x "$TMPSCRIPT"
 
-    if command -v screen &>/dev/null; then
+    if command -v tmux &>/dev/null; then
         echo ""
-        echo "  Запуск в screen '3xui-install'..."
-        echo "  Если соединение оборвётся: подключись и выполни --> screen -r 3xui-install"
+        echo "  Запуск в tmux (сессия: 3xui)..."
+        echo "  Если соединение оборвётся: переподключись и выполни --> tmux attach -t 3xui"
         echo ""
-        sleep 1
-        INSIDE_SCREEN=1 exec screen -S 3xui-install bash "$TMPSCRIPT"
+        # Do NOT use exec — exec replaces bash and causes MobaXterm to disconnect
+        INSIDE_SCREEN=1 tmux new-session -s 3xui "bash $TMPSCRIPT"
+        exit 0
+    elif command -v screen &>/dev/null; then
+        echo ""
+        echo "  Запуск в screen (сессия: 3xui-install)..."
+        echo "  Если соединение оборвётся: переподключись и выполни --> screen -r 3xui-install"
+        echo ""
+        # Do NOT use exec — exec replaces bash and causes MobaXterm to disconnect
+        INSIDE_SCREEN=1 screen -S 3xui-install bash "$TMPSCRIPT"
+        exit 0
     else
-        # screen unavailable — run directly (session may drop on SSH restart)
-        echo "  [!] screen недоступен, запуск без защиты от разрыва соединения"
-        INSIDE_SCREEN=1 exec bash "$TMPSCRIPT"
+        echo "  [!] tmux/screen недоступны, запуск напрямую"
+        INSIDE_SCREEN=1 bash "$TMPSCRIPT"
+        exit 0
     fi
 fi
 

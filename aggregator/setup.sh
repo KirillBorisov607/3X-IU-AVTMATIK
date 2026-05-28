@@ -2,7 +2,7 @@
 # =============================================================
 # Subscription Aggregator Setup
 # Run on the server where aggregator will live (can be any VPS)
-# Usage: sudo bash setup.sh
+# Usage: bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/aggregator/setup.sh)
 # =============================================================
 set -euo pipefail
 
@@ -11,22 +11,34 @@ log()  { echo -e "${GREEN}[+]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
-[[ $EUID -eq 0 ]] || die "Run as root: sudo bash setup.sh"
+[[ $EUID -eq 0 ]] || die "Run as root"
 
+REPO_URL="https://github.com/KirillBorisov607/3X-IU-AVTMATIK.git"
+REPO_RAW="https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master"
 INSTALL_DIR="/opt/sub-aggregator"
 SERVICE_USER="subaggregate"
 AGG_PORT=8080
 
-log "Installing Python and dependencies..."
+log "Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv
+apt-get install -y -qq python3 python3-pip python3-venv git curl
 
 log "Creating service user..."
 id "$SERVICE_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 
-log "Copying aggregator files..."
+log "Downloading aggregator files..."
 mkdir -p "$INSTALL_DIR"
-cp app.py config.yaml requirements.txt "$INSTALL_DIR/"
+
+# Download files directly from GitHub (no git clone needed)
+curl -fsSL "${REPO_RAW}/aggregator/app.py"                 -o "$INSTALL_DIR/app.py"
+curl -fsSL "${REPO_RAW}/aggregator/requirements.txt"       -o "$INSTALL_DIR/requirements.txt"
+curl -fsSL "${REPO_RAW}/aggregator/sub-aggregator.service" -o /etc/systemd/system/sub-aggregator.service
+
+# Download config only if it doesn't already exist (preserve existing config on re-runs)
+if [[ ! -f "$INSTALL_DIR/config.yaml" ]]; then
+    curl -fsSL "${REPO_RAW}/aggregator/config.yaml" -o "$INSTALL_DIR/config.yaml"
+fi
+
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 log "Creating Python virtual environment..."
@@ -38,8 +50,7 @@ log "Setting up log directory..."
 mkdir -p /var/log/sub-aggregator
 chown "$SERVICE_USER:$SERVICE_USER" /var/log/sub-aggregator
 
-log "Installing systemd service..."
-cp sub-aggregator.service /etc/systemd/system/
+log "Enabling systemd service..."
 systemctl daemon-reload
 systemctl enable sub-aggregator
 

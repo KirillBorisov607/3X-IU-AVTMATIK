@@ -12,12 +12,10 @@ Automated installation and hardening script for [3x-ui](https://github.com/mhsan
 
 ### 1. Install 3x-ui on each server
 
-Upload the script and run it on each VPS:
+Run directly on each VPS — no file transfers needed:
 
 ```bash
-scp install.sh root@YOUR_SERVER_IP:/root/
-ssh root@YOUR_SERVER_IP
-bash install.sh
+bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 ```
 
 The script will ask for:
@@ -62,10 +60,7 @@ servers:
 **Deploy the aggregator:**
 
 ```bash
-scp -r aggregator/ root@YOUR_AGG_SERVER:/root/aggregator/
-ssh root@YOUR_AGG_SERVER
-cd /root/aggregator
-bash setup.sh
+bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/aggregator/setup.sh)
 ```
 
 ### 3. Add one URL to your clients

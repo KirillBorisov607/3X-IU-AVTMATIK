@@ -12,12 +12,10 @@
 
 ### 1. Установить 3x-ui на каждый сервер
 
-Загрузить скрипт и запустить на каждом VPS:
+Запустить прямо на VPS — переносить файлы не нужно:
 
 ```bash
-scp install.sh root@IP_СЕРВЕРА:/root/
-ssh root@IP_СЕРВЕРА
-bash install.sh
+bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 ```
 
 Скрипт спросит:
@@ -62,10 +60,7 @@ servers:
 **Развернуть агрегатор:**
 
 ```bash
-scp -r aggregator/ root@IP_АГРЕГАТОРА:/root/aggregator/
-ssh root@IP_АГРЕГАТОРА
-cd /root/aggregator
-bash setup.sh
+bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/aggregator/setup.sh)
 ```
 
 ### 3. Добавить одну ссылку в клиент

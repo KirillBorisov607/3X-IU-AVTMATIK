@@ -74,6 +74,7 @@ load_ru() {
     S[opt_agg_install]="1) Установить агрегатор"
     S[opt_agg_add]="2) Добавить подписку к существующему агрегатору"
     S[ask_ssh]="Новый SSH порт [2222]: "
+    S[ask_ssh_pass]="Новый пароль root для SSH [авто]: "
     S[ask_panel_port]="Порт панели (внутренний) [2053]: "
     S[ask_nginx_port]="Порт для доступа к панели через HTTPS [8443]: "
     S[ask_user]="Логин панели [admin]: "
@@ -115,6 +116,7 @@ load_en() {
     S[opt_agg_install]="1) Install aggregator"
     S[opt_agg_add]="2) Add subscription to existing aggregator"
     S[ask_ssh]="New SSH port [2222]: "
+    S[ask_ssh_pass]="New root password for SSH [auto]: "
     S[ask_panel_port]="Panel internal port [2053]: "
     S[ask_nginx_port]="Panel HTTPS access port [8443]: "
     S[ask_user]="Panel username [admin]: "
@@ -227,12 +229,22 @@ NEW_SSH_PORT=2222
 OLD_SSH_PORT=22
 SERVER_LABEL=""
 INBOUND_PORTS=()
+ROOT_SSH_PASS=""
 LOG_FILE="/root/3xui-credentials.log"
 SSH_SVC="ssh"   # detected in harden_ssh(); Ubuntu 24.04 = ssh, older = sshd
 
 prompt_panel() {
     sep
     read -rp "  $(s ask_ssh)"         _in; NEW_SSH_PORT="${_in:-2222}"
+
+    read -rsp "  $(s ask_ssh_pass)" _in; echo
+    if [[ -z "$_in" ]]; then
+        ROOT_SSH_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
+        info "  SSH пароль (авто): ${BOLD}${ROOT_SSH_PASS}${NC}"
+    else
+        ROOT_SSH_PASS="$_in"
+    fi
+
     read -rp "  $(s ask_panel_port)"  _in; PANEL_PORT="${_in:-2053}"
     read -rp "  $(s ask_nginx_port)"  _in; PANEL_NGINX_PORT="${_in:-8443}"
     read -rp "  $(s ask_user)"        _in; PANEL_USER="${_in:-admin}"
@@ -386,6 +398,10 @@ EOF
     grep -q "^Include /etc/ssh/sshd_config.d" /etc/ssh/sshd_config \
         || echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
     sshd -t || die "SSH config test failed"
+
+    # Set root password
+    echo "root:${ROOT_SSH_PASS}" | chpasswd
+    log "Root SSH password set."
 }
 
 setup_firewall() {
@@ -715,6 +731,7 @@ print_panel_summary() {
         echo "3x-ui install — $(date)"
         echo "Server:     $SERVER_LABEL ($ip)"
         echo "SSH:        ssh -p $NEW_SSH_PORT root@$ip"
+        echo "SSH pass:   $ROOT_SSH_PASS"
         echo "Panel URL:  https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
         echo "Username:   $PANEL_USER"
         echo "Password:   $PANEL_PASS"
@@ -738,6 +755,7 @@ print_panel_summary() {
     echo -e "${CYAN}──────────────────── SSH ─────────────────────────────${NC}"
     echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
     echo -e "  Порт:     ${BOLD}$NEW_SSH_PORT${NC}"
+    echo -e "  Пароль:   ${BOLD}${ROOT_SSH_PASS}${NC}"
     echo -e "  Вход:     пароль + fail2ban (3 попытки → бан 24ч)"
     echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     echo ""

@@ -1,124 +1,107 @@
 # 3x-ui Automated Setup
 
-Automated installation and hardening script for [3x-ui](https://github.com/mhsanaei/3x-ui) panel, plus a subscription aggregator that combines multiple servers into a single subscription URL.
+Unified setup script for [3x-ui](https://github.com/mhsanaei/3x-ui) panel and subscription aggregator.
+
+One script handles everything: language selection, mode selection, server hardening, panel installation hidden behind nginx, and subscription management.
 
 ## Requirements
 
 - Ubuntu 20.04 / 22.04 / 24.04 or Debian 11 / 12
 - Root access
-- Python 3.10+ (for the aggregator)
 
-## Quick Start
+## Usage
 
-### 1. Install 3x-ui on each server
-
-Run directly on each VPS — no file transfers needed:
+Run on any server:
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 ```
 
-The script will ask for:
-- New SSH port (default: 2222)
-- Panel port (default: 2053)
-- Panel username and password
+The script will ask:
 
-Everything else is configured automatically.
+1. **Language** — Russian or English
+2. **Mode** — Panel or Aggregator
+3. If Aggregator — Install fresh or Add subscription to existing
 
-### 2. Deploy the subscription aggregator
+## Panel mode
 
-The aggregator runs on one server and combines subscriptions from all your 3x-ui instances into a single URL.
+Installs 3x-ui with full server hardening. The panel is hidden behind nginx and accessible only via a secret random path over HTTPS.
 
-**Edit the config first:**
+What the script configures:
 
-```bash
-nano aggregator/config.yaml
-```
-
-Set your token and add each server's subscription URL:
-
-```yaml
-token: "your-long-random-token-here"   # openssl rand -hex 32
-
-servers:
-  - name: "Server-1 (US)"
-    sub_url: "http://1.2.3.4:2053/panelpath/sub/client-uuid"
-    prefix: "US"
-    verify_ssl: false
-
-  - name: "Server-2 (DE)"
-    sub_url: "http://5.6.7.8:2053/panelpath/sub/client-uuid"
-    prefix: "DE"
-    verify_ssl: false
-```
-
-**How to find your subscription URL in 3x-ui:**
-1. Open the panel
-2. Go to a client's settings
-3. Copy the subscription link from the "Subscription" tab
-
-**Deploy the aggregator:**
-
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/aggregator/setup.sh)
-```
-
-### 3. Add one URL to your clients
-
-```
-http://AGG_SERVER_IP:8080/sub/YOUR_TOKEN
-```
-
-Add this single URL to any proxy client (v2rayN, Hiddify, Sing-box, etc.). It will return proxies from all your servers combined.
-
-## What install.sh does
-
-| Step | Description |
-|------|-------------|
-| System update | apt upgrade, install essential tools |
-| sysctl hardening | SYN cookies, anti-spoofing, disable ICMP redirects |
-| SSH hardening | Custom port, key-only auth, MaxAuthTries 3 |
-| UFW firewall | Default deny, whitelist only required ports, rate limit |
-| iptables rules | Block NULL/XMAS/FIN scans, SYN flood protection |
-| Fail2ban | SSH jail (ban 24h after 3 attempts), panel jail |
-| 3x-ui install | Official installer + CLI configuration |
+| Component | Description |
+|-----------|-------------|
+| sysctl | SYN cookies, anti-spoofing, martian logging, performance tuning |
+| SSH | Custom port, key-only auth, MaxAuthTries 3 |
+| UFW | Default deny, whitelist only required ports, rate limit on SSH |
+| iptables | Drop NULL/XMAS/FIN scans, SYN flood protection, invalid packets |
+| Fail2ban | SSH (3 attempts, 24h ban), panel login (5 attempts) |
+| nginx | HTTPS reverse proxy on custom port, returns 444 for all paths except the secret one |
+| 3x-ui | Official installer, bound to localhost only, secret base path |
 | Auto-updates | Unattended security upgrades |
 
-After installation, credentials are saved to `/root/3xui-credentials.log`. Delete this file after copying credentials to a password manager.
+Panel access after install:
 
-## What the aggregator does
+```
+https://SERVER_IP:NGINX_PORT/SECRET_PATH/
+```
 
-- Fetches subscription content from each configured 3x-ui server
-- Decodes base64, merges proxy lists, re-encodes base64
-- Caches results for 5 minutes (configurable) to avoid hammering servers
-- Serves the combined result at `/sub/<token>`
-- Rate limits requests per IP
-- Returns 404 for invalid tokens (does not reveal endpoint existence)
+The secret path is randomly generated during installation. Direct access to the internal panel port is blocked — only nginx can reach it.
+
+After installation:
+1. Test SSH on the new port before closing the current session
+2. Remove old SSH port: `ufw delete allow 22/tcp`
+3. Delete credentials file: `rm /root/3xui-credentials.log`
+4. Add clients in the panel, copy their Subscription URLs
+5. Add Subscription URLs to the aggregator
+
+## Aggregator mode
+
+### Option 1 — Install aggregator
+
+Deploys the subscription aggregator service. It fetches subscriptions from all configured 3x-ui servers and merges them into a single URL.
+
+After install, use `Add subscription` to add servers one by one.
+
+### Option 2 — Add subscription
+
+Adds a new 3x-ui server subscription to an existing aggregator installation. Prompts for server name, subscription URL, and proxy prefix. Restarts the service automatically.
+
+The combined subscription URL:
+
+```
+http://AGG_SERVER_IP:AGG_PORT/sub/TOKEN
+```
+
+Add this URL to any proxy client (v2rayN, Hiddify, Sing-box, etc.) — it returns proxies from all servers.
+
+## How to get a subscription URL from 3x-ui
+
+1. Open the panel
+2. Go to client settings
+3. Copy the Subscription link from the Subscription tab
+
+It looks like: `https://IP:PORT/PATH/sub/CLIENT-UUID`
 
 ## File structure
 
 ```
 .
-├── install.sh                     # Server setup script
+├── install.sh                     # Unified setup script
 └── aggregator/
     ├── app.py                     # Flask aggregator application
     ├── config.yaml                # Server list and token config
     ├── requirements.txt           # Python dependencies
-    ├── setup.sh                   # Aggregator deployment script
+    ├── setup.sh                   # Redirects to install.sh
     └── sub-aggregator.service     # systemd unit file
 ```
 
 ## Security notes
 
-- Generate a strong token: `openssl rand -hex 32`
-- The aggregator returns 404 (not 403) for invalid tokens
-- The systemd service runs under a dedicated unprivileged user
-- `verify_ssl: false` is needed if your panel uses a self-signed certificate
-
-## After installation checklist
-
-1. Test SSH on the new port before closing the current session
-2. Remove the old SSH port from UFW: `ufw delete allow 22/tcp`
-3. Delete the credentials log file: `rm /root/3xui-credentials.log`
-4. Add clients in the 3x-ui panel and copy their subscription URLs
-5. Add subscription URLs to `aggregator/config.yaml`
+- The panel port is bound to localhost — not reachable from outside
+- nginx sits in front and only forwards the secret path
+- All other paths return 444 (TCP close, no response)
+- Fail2ban watches nginx logs for login failures
+- Aggregator token uses constant-time comparison to prevent timing attacks
+- Aggregator returns 404 for invalid tokens (does not reveal endpoint existence)
+- Generate token: `openssl rand -hex 32`

@@ -365,8 +365,8 @@ harden_ssh() {
     mkdir -p /etc/ssh/sshd_config.d
     cat > /etc/ssh/sshd_config.d/99-hardened.conf << EOF
 Port $NEW_SSH_PORT
-PermitRootLogin prohibit-password
-PasswordAuthentication no
+PermitRootLogin yes
+PasswordAuthentication yes
 PubkeyAuthentication yes
 MaxAuthTries 3
 MaxSessions 5
@@ -399,7 +399,8 @@ setup_firewall() {
     ufw limit "${NEW_SSH_PORT}/tcp"
     ufw allow "${OLD_SSH_PORT}/tcp" comment "OLD SSH - remove after test"
 
-    # Panel access via nginx (NOT the raw panel port — that stays on localhost only)
+    # Panel access via nginx only — internal port is blocked from outside
+    ufw deny  "${PANEL_PORT}/tcp"       comment "3x-ui panel direct - blocked"
     ufw allow "${PANEL_NGINX_PORT}/tcp" comment "3x-ui panel HTTPS"
 
     # Inbound ports
@@ -669,10 +670,22 @@ EOF
     x-ui setting -password    "$PANEL_PASS"
     x-ui setting -port        "$PANEL_PORT"
     x-ui setting -webBasePath "${PANEL_PATH}"
-    x-ui setting -listenIP    "127.0.0.1"
 
     systemctl restart x-ui
-    sleep 2
+    sleep 4
+
+    # Verify x-ui is listening on the expected port
+    local tries=0
+    while [[ $tries -lt 6 ]]; do
+        ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT} " && break
+        sleep 2; (( tries++ )) || true
+    done
+    if ! ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT} "; then
+        warn "x-ui не слушает порт $PANEL_PORT — проверь: systemctl status x-ui"
+    else
+        log "x-ui слушает порт $PANEL_PORT"
+    fi
+
     log "3x-ui configured. Real panel URL is in the summary below."
 }
 
@@ -725,7 +738,7 @@ print_panel_summary() {
     echo -e "${CYAN}──────────────────── SSH ─────────────────────────────${NC}"
     echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
     echo -e "  Порт:     ${BOLD}$NEW_SSH_PORT${NC}"
-    echo -e "  Вход:     только по ключу (пароль отключён)"
+    echo -e "  Вход:     пароль + fail2ban (3 попытки → бан 24ч)"
     echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${CYAN}──────────────────── Открытые порты ─────────────────${NC}"

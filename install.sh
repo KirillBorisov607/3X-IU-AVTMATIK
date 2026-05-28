@@ -4,6 +4,29 @@
 # Panel install + server hardening | Subscription aggregator
 # Run: bash <(curl -Ls https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh)
 # =============================================================
+
+# Re-launch inside screen so SSH restart doesn't kill the session
+if [[ -z "${INSIDE_SCREEN:-}" ]]; then
+    if ! command -v screen &>/dev/null; then
+        apt-get install -y -qq screen 2>/dev/null || true
+    fi
+    if command -v screen &>/dev/null; then
+        export INSIDE_SCREEN=1
+        # Save script to temp file (needed when piped from curl)
+        TMPSCRIPT=$(mktemp /tmp/3xui-install-XXXX.sh)
+        cat "$0" > "$TMPSCRIPT" 2>/dev/null || curl -Ls \
+            https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh \
+            -o "$TMPSCRIPT"
+        chmod +x "$TMPSCRIPT"
+        echo ""
+        echo "  Launching inside screen session '3xui-install'..."
+        echo "  If connection drops: ssh back and run --> screen -r 3xui-install"
+        echo ""
+        sleep 2
+        exec screen -S 3xui-install bash "$TMPSCRIPT"
+    fi
+fi
+
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -636,6 +659,10 @@ run_panel() {
     setup_nginx
     install_3xui
     setup_autoupdates
+    # Restart SSH last — this will drop the current session if not in screen
+    # If running inside screen, reconnect with: screen -r 3xui-install
+    warn "Restarting SSH on port $NEW_SSH_PORT — reconnect if session drops."
+    sleep 2
     systemctl restart sshd
     print_panel_summary
 }

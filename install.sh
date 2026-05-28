@@ -250,13 +250,28 @@ prompt_panel() {
 update_system() {
     log "apt update & upgrade..."
     export DEBIAN_FRONTEND=noninteractive
+
+    # Ubuntu 24.04 (Noble): disable needrestart interactive prompts
+    if [[ -f /etc/needrestart/needrestart.conf ]]; then
+        sed -i "s/^#\?\$nrconf{restart}.*$/\$nrconf{restart} = 'a';/" \
+            /etc/needrestart/needrestart.conf 2>/dev/null || true
+    fi
+    mkdir -p /etc/needrestart/conf.d
+    echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
+
     apt-get update -qq
-    apt-get upgrade -y -qq -o Dpkg::Options::="--force-confold"
-    apt-get install -y -qq \
+    apt-get upgrade -y \
+        -o Dpkg::Options::="--force-confold" \
+        -o Dpkg::Options::="--force-confdef" \
+        -o APT::Get::AllowUnauthenticated=false \
+        2>&1 | grep -v "^(Reading|Preparing|Unpacking|Setting|Processing)" || true
+    apt-get install -y \
+        -o Dpkg::Options::="--force-confold" \
         curl wget git vim htop unzip \
         net-tools lsof jq ca-certificates \
         gnupg2 ufw fail2ban iptables-persistent \
         openssl nginx unattended-upgrades
+    log "Packages ready."
 }
 
 harden_sysctl() {
@@ -617,36 +632,75 @@ print_panel_summary() {
     ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "UNKNOWN")
 
     sep
-    echo -e "  ${BOLD}${GREEN}$(s done)${NC}"
+    echo -e "  ${BOLD}${GREEN}  Установка завершена!${NC}"
     sep
-    printf "  %-18s %s\n" "Server:"     "$SERVER_LABEL ($ip)"
-    printf "  %-18s %s\n" "SSH:"        "ssh -p $NEW_SSH_PORT root@$ip"
-    printf "  %-18s %s\n" "Panel URL:"  "https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
-    printf "  %-18s %s\n" "$(s ask_user | tr -d ':' | xargs):" "$PANEL_USER"
-    printf "  %-18s %s\n" "Password:"   "$PANEL_PASS"
-    [[ ${#INBOUND_PORTS[@]} -gt 0 ]] && \
-    printf "  %-18s %s\n" "Inbounds:"   "${INBOUND_PORTS[*]}"
-    sep
-    warn "  $(s warn_session)"
+    echo -e "  ${BOLD}Сервер:${NC}"
+    printf "    %-20s %s\n" "Метка:"        "$SERVER_LABEL"
+    printf "    %-20s %s\n" "IP:"           "$ip"
     echo ""
-    info "  $(s checklist)"
-    echo "   1. $(s check1)"
-    echo "   2. $(s check2)"
-    echo "   3. $(s check3)"
-    echo "   4. $(s check4)"
-    echo "   5. $(s check5)"
+    echo -e "  ${BOLD}SSH:${NC}"
+    printf "    %-20s %s\n" "Команда:"      "ssh -p $NEW_SSH_PORT root@$ip"
+    printf "    %-20s %s\n" "Порт:"         "$NEW_SSH_PORT"
+    echo ""
+    echo -e "  ${BOLD}Панель 3x-ui:${NC}"
+    printf "    %-20s %s\n" "URL:"          "https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
+    printf "    %-20s %s\n" "Логин:"        "$PANEL_USER"
+    printf "    %-20s %s\n" "Пароль:"       "$PANEL_PASS"
+    printf "    %-20s %s\n" "Внутр. порт:"  "$PANEL_PORT (только localhost)"
+    printf "    %-20s %s\n" "HTTPS порт:"   "$PANEL_NGINX_PORT"
+    echo ""
+    echo -e "  ${BOLD}Открытые порты:${NC}"
+    printf "    %-20s %s\n" "$NEW_SSH_PORT/tcp"          "SSH"
+    printf "    %-20s %s\n" "$PANEL_NGINX_PORT/tcp"      "Панель (nginx)"
+    for entry in "${INBOUND_PORTS[@]}"; do
+        [[ "$entry" == */* ]] && proto="" || entry="${entry}/tcp"
+        printf "    %-20s %s\n" "$entry" "inbound"
+    done
+    echo ""
+    echo -e "  ${BOLD}Защита:${NC}"
+    printf "    %-20s %s\n" "Fail2ban:"     "SSH (3 попытки), панель (5 попыток)"
+    printf "    %-20s %s\n" "UFW:"          "активен, всё закрыто кроме списка выше"
+    printf "    %-20s %s\n" "Decoy страница:" "https://$ip:$PANEL_NGINX_PORT/"
+    sep
+    warn "  Удали файл с данными: rm /root/3xui-credentials.log"
     sep
 
     {
         echo "3x-ui install — $(date)"
         echo "Server:     $SERVER_LABEL ($ip)"
-        echo "SSH port:   $NEW_SSH_PORT"
+        echo "SSH:        ssh -p $NEW_SSH_PORT root@$ip"
         echo "Panel URL:  https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
         echo "Username:   $PANEL_USER"
         echo "Password:   $PANEL_PASS"
+        echo "Inbounds:   ${INBOUND_PORTS[*]:-none}"
     } >> "$LOG_FILE"
     chmod 600 "$LOG_FILE"
-    warn "  $(s warn_log)"
+    info "  Данные сохранены в /root/3xui-credentials.log"
+}
+
+verify_ssh() {
+    local ip
+    ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "YOUR_IP")
+
+    sep
+    warn "  SSH перезапускается на порту $NEW_SSH_PORT"
+    warn "  Открой НОВУЮ вкладку MobaXterm и проверь подключение:"
+    echo ""
+    echo -e "  ${BOLD}  ssh -p $NEW_SSH_PORT root@$ip${NC}"
+    echo ""
+    systemctl restart sshd
+    echo ""
+    read -rp "  Подключение на порту $NEW_SSH_PORT работает? [y/N]: " _ok
+    if [[ "${_ok,,}" != "y" ]]; then
+        warn "  Откатываю SSH на порт 22..."
+        sed -i "s/^Port $NEW_SSH_PORT/Port 22/" /etc/ssh/sshd_config.d/99-hardened.conf
+        systemctl restart sshd
+        ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
+        die "SSH откатан на порт 22. Проверь настройки и запусти скрипт заново."
+    fi
+    log "SSH проверен. Удаляю старый порт 22 из файрволла."
+    ufw delete allow "22/tcp" 2>/dev/null || true
+    sep
 }
 
 run_panel() {
@@ -659,11 +713,7 @@ run_panel() {
     setup_nginx
     install_3xui
     setup_autoupdates
-    # Restart SSH last — this will drop the current session if not in screen
-    # If running inside screen, reconnect with: screen -r 3xui-install
-    warn "Restarting SSH on port $NEW_SSH_PORT — reconnect if session drops."
-    sleep 2
-    systemctl restart sshd
+    verify_ssh
     print_panel_summary
 }
 

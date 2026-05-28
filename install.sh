@@ -635,27 +635,42 @@ HTMLEOF
     local header_cmd=""
     nginx -V 2>&1 | grep -q "headers-more" && header_cmd="more_set_headers \"Server: Apache/2.4.57\";"
 
+    # Generate DH parameters for stronger key exchange
+    log "Generating DH parameters (2048-bit)..."
+    openssl dhparam -out /etc/nginx/ssl/dhparam.pem 2048 > /dev/null 2>&1
+
     cat > /etc/nginx/sites-available/3xui << EOF
 server {
     listen ${PANEL_NGINX_PORT} ssl;
+    http2  on;
     server_name _;
 
     ssl_certificate      /etc/nginx/ssl/panel.crt;
     ssl_certificate_key  /etc/nginx/ssl/panel.key;
+    ssl_dhparam          /etc/nginx/ssl/dhparam.pem;
+
     ssl_protocols        TLSv1.2 TLSv1.3;
     ssl_ciphers          ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
     ssl_prefer_server_ciphers off;
     ssl_session_timeout  1d;
-    ssl_session_cache    shared:SSL:10m;
+    ssl_session_cache    shared:SSL:50m;
+    ssl_session_tickets  off;
+
+    ssl_stapling         on;
+    ssl_stapling_verify  on;
+    resolver             1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout     5s;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options    "nosniff"    always;
+    add_header X-Frame-Options           "DENY"       always;
+    add_header Referrer-Policy           "no-referrer" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
 
     access_log /var/log/nginx/3xui-access.log;
     error_log  /var/log/nginx/3xui-error.log;
 
-    # Remove real server signature, look like something else
     ${header_cmd}
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Referrer-Policy "no-referrer" always;
 
     # Serve decoy page for any unknown path
     root /var/www/decoy;

@@ -286,7 +286,8 @@ prompt_panel() {
     echo ""
     info "  $(s inbound_hint)"
     read -rp "  $(s ask_inbound)" _in
-    [[ -n "$_in" ]] && read -ra INBOUND_PORTS <<< "$_in"
+    # IFS=$'\n\t' is active — override to space so "443 80 8080" splits correctly
+    [[ -n "$_in" ]] && IFS=' ' read -ra INBOUND_PORTS <<< "$_in"
 
     sep
     info "  SSH:          $NEW_SSH_PORT"
@@ -681,23 +682,23 @@ EOF
 }
 
 install_3xui() {
-    log "Installing 3x-ui..."
+    log "Installing 3x-ui (official installer — ignore the URL it prints, we override everything after)..."
     bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) << 'EOF'
 
 EOF
     sleep 3
     systemctl is-active x-ui > /dev/null 2>&1 || die "x-ui service failed to start"
 
-    x-ui setting -username  "$PANEL_USER"
-    x-ui setting -password  "$PANEL_PASS"
-    x-ui setting -port      "$PANEL_PORT"
+    log "Applying custom settings (port / credentials / path / listen IP)..."
+    x-ui setting -username    "$PANEL_USER"
+    x-ui setting -password    "$PANEL_PASS"
+    x-ui setting -port        "$PANEL_PORT"
     x-ui setting -webBasePath "${PANEL_PATH}"
-
-    # Panel only on localhost — nginx is the public face
-    x-ui setting -listenIP "127.0.0.1"
+    x-ui setting -listenIP    "127.0.0.1"
 
     systemctl restart x-ui
     sleep 2
+    log "3x-ui configured. Real panel URL is in the summary below."
 }
 
 setup_autoupdates() {

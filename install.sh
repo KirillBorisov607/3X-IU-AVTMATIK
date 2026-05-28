@@ -32,28 +32,27 @@ if [[ -z "${INSIDE_SCREEN:-}" ]]; then
     fi
 fi
 
-set -euo pipefail
+set -eu
 IFS=$'\n\t'
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 INSTALL_LOG="/tmp/3xui-install.log"
+FAIL_MARKER="/tmp/3xui-FAILED.txt"
 
-log()  { echo -e "${GREEN}[+]${NC} $*" | tee -a "$INSTALL_LOG"; }
-info() { echo -e "${BLUE}[i]${NC} $*" | tee -a "$INSTALL_LOG"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*" | tee -a "$INSTALL_LOG"; }
+log()  { echo -e "${GREEN}[+]${NC} $*"; }
+info() { echo -e "${BLUE}[i]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[x]${NC} $*" >&2; exit 1; }
 sep()  { echo -e "${CYAN}──────────────────────────────────────────────${NC}"; }
 
-# Redirect all output to log file while keeping it on screen
+# Tee stdout+stderr to log. Safe without pipefail.
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 
-# Error trap — shows exactly what failed and where
+# On error: print details AND write to FAIL_MARKER so it's readable after screen closes
 error_handler() {
-    local exit_code=$1
-    local line=$2
-    local command=$3
+    local exit_code=$1 line=$2 command=$3
     echo ""
     echo -e "${RED}════════════════════════════════════════════════${NC}"
     echo -e "${RED}  ОШИБКА УСТАНОВКИ${NC}"
@@ -62,16 +61,27 @@ error_handler() {
     echo -e "  Строка:   ${BOLD}${line}${NC}"
     echo -e "  Код:      ${BOLD}${exit_code}${NC}"
     echo ""
-    echo -e "  Лог установки: ${BOLD}${INSTALL_LOG}${NC}"
-    echo -e "  Последние строки лога:"
-    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
-    tail -n 20 "$INSTALL_LOG" 2>/dev/null || true
-    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
-    echo ""
-    echo -e "  Полный лог: ${BOLD}cat ${INSTALL_LOG}${NC}"
+    echo -e "  После переподключения проверь:"
+    echo -e "    ${BOLD}cat ${INSTALL_LOG}${NC}"
+    echo -e "    ${BOLD}cat ${FAIL_MARKER}${NC}"
     echo -e "${RED}════════════════════════════════════════════════${NC}"
+    # Write marker directly to disk — survives screen session close
+    {
+        echo "FAILED at $(date)"
+        echo "Line: $line  |  Code: $exit_code"
+        echo "Command: $command"
+        echo ""
+        echo "Last 40 lines of log:"
+        tail -n 40 "$INSTALL_LOG" 2>/dev/null || true
+    } > "$FAIL_MARKER"
 }
 trap 'error_handler $? $LINENO "$BASH_COMMAND"' ERR
+
+echo ""
+echo -e "${YELLOW}[!]${NC} Если соединение оборвётся — переподключись и проверь:"
+echo    "    cat ${INSTALL_LOG}    (полный лог)"
+echo    "    cat ${FAIL_MARKER}   (детали ошибки)"
+echo ""
 
 # =============================================================
 # TRANSLATIONS
@@ -283,35 +293,46 @@ prompt_panel() {
 
 update_system() {
     log "apt update & upgrade..."
+
+    # Export for all subprocesses in this function
     export DEBIAN_FRONTEND=noninteractive
+    export UCF_FORCE_CONFFOLD=1
+    export NEEDRESTART_MODE=a
+    export NEEDRESTART_SUSPEND=1
 
     # Ubuntu 24.04 (Noble): disable needrestart interactive prompts
+    mkdir -p /etc/needrestart/conf.d
+    echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
     if [[ -f /etc/needrestart/needrestart.conf ]]; then
         sed -i "s/^#\?\$nrconf{restart}.*$/\$nrconf{restart} = 'a';/" \
             /etc/needrestart/needrestart.conf 2>/dev/null || true
     fi
-    mkdir -p /etc/needrestart/conf.d
-    echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
 
-    apt-get update -qq
+    # Pre-answer debconf for iptables-persistent (avoids interactive save dialog)
+    if command -v debconf-set-selections &>/dev/null; then
+        echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" \
+            | debconf-set-selections
+        echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" \
+            | debconf-set-selections
+    fi
 
-    # Suppress ALL interactive prompts: grub, needrestart, systemd, ucf
-    UCF_FORCE_CONFFOLD=1 \
-    NEEDRESTART_MODE=a \
-    NEEDRESTART_SUSPEND=1 \
+    apt-get update -qq || warn "apt-get update had errors, continuing"
+
     apt-get upgrade -y \
         -o Dpkg::Options::="--force-confold" \
         -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confmiss" || true
+        -o Dpkg::Options::="--force-confmiss" \
+        || warn "apt-get upgrade had errors, continuing"
 
-    UCF_FORCE_CONFFOLD=1 \
     apt-get install -y \
         -o Dpkg::Options::="--force-confold" \
         -o Dpkg::Options::="--force-confdef" \
         curl wget git vim htop unzip \
         net-tools lsof jq ca-certificates \
         gnupg2 ufw fail2ban iptables-persistent \
-        openssl nginx unattended-upgrades
+        openssl nginx unattended-upgrades \
+        || die "Package install failed. Check: cat ${INSTALL_LOG}"
+
     log "Packages ready."
 }
 

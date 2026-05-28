@@ -697,40 +697,7 @@ print_panel_summary() {
     local ip
     ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "UNKNOWN")
 
-    sep
-    echo -e "  ${BOLD}${GREEN}  Установка завершена!${NC}"
-    sep
-    echo -e "  ${BOLD}Сервер:${NC}"
-    printf "    %-20s %s\n" "Метка:"        "$SERVER_LABEL"
-    printf "    %-20s %s\n" "IP:"           "$ip"
-    echo ""
-    echo -e "  ${BOLD}SSH:${NC}"
-    printf "    %-20s %s\n" "Команда:"      "ssh -p $NEW_SSH_PORT root@$ip"
-    printf "    %-20s %s\n" "Порт:"         "$NEW_SSH_PORT"
-    echo ""
-    echo -e "  ${BOLD}Панель 3x-ui:${NC}"
-    printf "    %-20s %s\n" "URL:"          "https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
-    printf "    %-20s %s\n" "Логин:"        "$PANEL_USER"
-    printf "    %-20s %s\n" "Пароль:"       "$PANEL_PASS"
-    printf "    %-20s %s\n" "Внутр. порт:"  "$PANEL_PORT (только localhost)"
-    printf "    %-20s %s\n" "HTTPS порт:"   "$PANEL_NGINX_PORT"
-    echo ""
-    echo -e "  ${BOLD}Открытые порты:${NC}"
-    printf "    %-20s %s\n" "$NEW_SSH_PORT/tcp"          "SSH"
-    printf "    %-20s %s\n" "$PANEL_NGINX_PORT/tcp"      "Панель (nginx)"
-    for entry in "${INBOUND_PORTS[@]}"; do
-        [[ "$entry" == */* ]] && proto="" || entry="${entry}/tcp"
-        printf "    %-20s %s\n" "$entry" "inbound"
-    done
-    echo ""
-    echo -e "  ${BOLD}Защита:${NC}"
-    printf "    %-20s %s\n" "Fail2ban:"     "SSH (3 попытки), панель (5 попыток)"
-    printf "    %-20s %s\n" "UFW:"          "активен, всё закрыто кроме списка выше"
-    printf "    %-20s %s\n" "Decoy страница:" "https://$ip:$PANEL_NGINX_PORT/"
-    sep
-    warn "  Удали файл с данными: rm /root/3xui-credentials.log"
-    sep
-
+    # Save credentials to file first (always, even if something below fails)
     {
         echo "3x-ui install — $(date)"
         echo "Server:     $SERVER_LABEL ($ip)"
@@ -741,7 +708,40 @@ print_panel_summary() {
         echo "Inbounds:   ${INBOUND_PORTS[*]:-none}"
     } >> "$LOG_FILE"
     chmod 600 "$LOG_FILE"
-    info "  Данные сохранены в /root/3xui-credentials.log"
+
+    echo ""
+    echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║           УСТАНОВКА ЗАВЕРШЕНА                    ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${BOLD}Сервер:${NC}   $SERVER_LABEL  ($ip)"
+    echo ""
+    echo -e "${CYAN}──────────────────── ПАНЕЛЬ 3x-ui ────────────────────${NC}"
+    echo -e "  URL:      ${BOLD}https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/${NC}"
+    echo -e "  Логин:    ${BOLD}${PANEL_USER}${NC}"
+    echo -e "  Пароль:   ${BOLD}${PANEL_PASS}${NC}"
+    echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "${CYAN}──────────────────── SSH ─────────────────────────────${NC}"
+    echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
+    echo -e "  Порт:     ${BOLD}$NEW_SSH_PORT${NC}"
+    echo -e "  Вход:     только по ключу (пароль отключён)"
+    echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "${CYAN}──────────────────── Открытые порты ─────────────────${NC}"
+    printf "    %-20s %s\n" "$NEW_SSH_PORT/tcp"     "SSH (новый)"
+    printf "    %-20s %s\n" "22/tcp"                "SSH (старый — удали после проверки)"
+    printf "    %-20s %s\n" "$PANEL_NGINX_PORT/tcp" "Панель (nginx HTTPS)"
+    for entry in "${INBOUND_PORTS[@]}"; do
+        [[ "$entry" == */* ]] || entry="${entry}/tcp"
+        printf "    %-20s %s\n" "$entry" "inbound"
+    done
+    echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "  Данные сохранены: ${BOLD}cat $LOG_FILE${NC}"
+    echo -e "${YELLOW}  Удали файл после сохранения: rm $LOG_FILE${NC}"
+    echo ""
+    read -rp "  Ты скопировал URL, логин и пароль панели? Нажми Enter чтобы продолжить... " _
 }
 
 verify_ssh() {
@@ -749,22 +749,28 @@ verify_ssh() {
     ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "YOUR_IP")
 
     sep
-    warn "  SSH перезапускается на порту $NEW_SSH_PORT"
-    warn "  Открой НОВУЮ вкладку MobaXterm и проверь подключение:"
+    warn "  Перезапускаю SSH на порту $NEW_SSH_PORT..."
+    if systemctl restart "$SSH_SVC" 2>/dev/null; then
+        log "  SSH перезапущен."
+    else
+        warn "  Не удалось перезапустить $SSH_SVC — попробуй вручную: systemctl restart $SSH_SVC"
+    fi
     echo ""
+    warn "  Открой НОВУЮ вкладку MobaXterm и проверь:"
     echo -e "  ${BOLD}  ssh -p $NEW_SSH_PORT root@$ip${NC}"
-    echo ""
-    systemctl restart "$SSH_SVC"
     echo ""
     read -rp "  Подключение на порту $NEW_SSH_PORT работает? [y/N]: " _ok
     if [[ "${_ok,,}" != "y" ]]; then
-        warn "  Откатываю SSH на порт 22..."
-        sed -i "s/^Port $NEW_SSH_PORT/Port 22/" /etc/ssh/sshd_config.d/99-hardened.conf
-        systemctl restart "$SSH_SVC"
+        warn "  Откатываю SSH на порт $OLD_SSH_PORT..."
+        sed -i "s/^Port $NEW_SSH_PORT/Port $OLD_SSH_PORT/" \
+            /etc/ssh/sshd_config.d/99-hardened.conf 2>/dev/null || true
+        systemctl restart "$SSH_SVC" 2>/dev/null || true
         ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
-        die "SSH откатан на порт 22. Проверь настройки и запусти скрипт заново."
+        warn "  SSH откатан на порт $OLD_SSH_PORT."
+        warn "  Запусти скрипт заново когда разберёшься с SSH."
+        return 0
     fi
-    log "SSH проверен. Удаляю старый порт 22 из файрволла."
+    log "SSH проверен на порту $NEW_SSH_PORT."
     ufw delete allow "22/tcp" 2>/dev/null || true
     sep
 }
@@ -779,8 +785,8 @@ run_panel() {
     setup_nginx
     install_3xui
     setup_autoupdates
+    print_panel_summary   # show credentials BEFORE ssh restart so they're never lost
     verify_ssh
-    print_panel_summary
 }
 
 # =============================================================

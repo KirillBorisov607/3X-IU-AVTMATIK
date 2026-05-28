@@ -279,6 +279,7 @@ OLD_SSH_PORT=22
 SERVER_LABEL=""
 INBOUND_PORTS=()
 LOG_FILE="/root/3xui-credentials.log"
+SSH_SVC="ssh"   # detected in harden_ssh(); Ubuntu 24.04 = ssh, older = sshd
 
 prompt_panel() {
     sep
@@ -402,6 +403,15 @@ EOF
 
 harden_ssh() {
     log "SSH hardening (port $NEW_SSH_PORT)..."
+
+    # Ubuntu 24.04 uses 'ssh.service'; older Ubuntu/Debian use 'sshd.service'
+    if systemctl list-units --full --all 2>/dev/null | grep -q '\bsshd\.service\b'; then
+        SSH_SVC="sshd"
+    else
+        SSH_SVC="ssh"
+    fi
+    log "SSH service name: $SSH_SVC"
+
     cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%s)"
     mkdir -p /etc/ssh/sshd_config.d
     cat > /etc/ssh/sshd_config.d/99-hardened.conf << EOF
@@ -795,13 +805,13 @@ verify_ssh() {
     echo ""
     echo -e "  ${BOLD}  ssh -p $NEW_SSH_PORT root@$ip${NC}"
     echo ""
-    systemctl restart sshd
+    systemctl restart "$SSH_SVC"
     echo ""
     read -rp "  Подключение на порту $NEW_SSH_PORT работает? [y/N]: " _ok
     if [[ "${_ok,,}" != "y" ]]; then
         warn "  Откатываю SSH на порт 22..."
         sed -i "s/^Port $NEW_SSH_PORT/Port 22/" /etc/ssh/sshd_config.d/99-hardened.conf
-        systemctl restart sshd
+        systemctl restart "$SSH_SVC"
         ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
         die "SSH откатан на порт 22. Проверь настройки и запусти скрипт заново."
     fi

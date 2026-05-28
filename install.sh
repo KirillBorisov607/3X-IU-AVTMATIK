@@ -73,8 +73,13 @@ load_ru() {
     S[choose_agg]="Действие с агрегатором:"
     S[opt_agg_install]="1) Установить агрегатор"
     S[opt_agg_add]="2) Добавить подписку к существующему агрегатору"
+    S[ask_user_name]="Имя пользователя (vpnadmin): "
+    S[ask_user_pass]="Пароль (мин. 12 символов): "
+    S[ask_user_pass2]="Повторите пароль: "
+    S[err_pass_short]="Минимум 12 символов"
+    S[err_pass_mismatch]="Пароли не совпадают"
+    S[err_user_root]="Нельзя использовать root как имя"
     S[ask_ssh]="Новый SSH порт [2222]: "
-    S[ask_ssh_pass]="Новый пароль root для SSH [авто]: "
     S[ask_panel_port]="Порт панели (внутренний) [2053]: "
     S[ask_nginx_port]="Порт для доступа к панели через HTTPS [8443]: "
     S[ask_user]="Логин панели [admin]: "
@@ -115,8 +120,13 @@ load_en() {
     S[choose_agg]="Aggregator action:"
     S[opt_agg_install]="1) Install aggregator"
     S[opt_agg_add]="2) Add subscription to existing aggregator"
+    S[ask_user_name]="Username (vpnadmin): "
+    S[ask_user_pass]="Password (min. 12 chars): "
+    S[ask_user_pass2]="Repeat password: "
+    S[err_pass_short]="Minimum 12 characters"
+    S[err_pass_mismatch]="Passwords do not match"
+    S[err_user_root]="Cannot use root as username"
     S[ask_ssh]="New SSH port [2222]: "
-    S[ask_ssh_pass]="New root password for SSH [auto]: "
     S[ask_panel_port]="Panel internal port [2053]: "
     S[ask_nginx_port]="Panel HTTPS access port [8443]: "
     S[ask_user]="Panel username [admin]: "
@@ -229,25 +239,43 @@ NEW_SSH_PORT=2222
 OLD_SSH_PORT=22
 SERVER_LABEL=""
 INBOUND_PORTS=()
-ROOT_SSH_PASS=""
+ADMIN_USER=""
+ADMIN_PASS=""
 LOG_FILE="/root/3xui-credentials.log"
-SSH_SVC="ssh"   # detected in harden_ssh(); Ubuntu 24.04 = ssh, older = sshd
+SSH_SVC="ssh"
 
 # ── PHASE 1: Server setup prompts ────────────────────────────
 prompt_server() {
     sep
     echo -e "  ${BOLD}═══ ШАГ 1: Настройка сервера ═══${NC}"
     sep
-    read -rp "  $(s ask_label)"   _in; SERVER_LABEL="${_in:-$(hostname -s)}"
-    read -rp "  $(s ask_ssh)"     _in; NEW_SSH_PORT="${_in:-2222}"
 
-    read -rsp "  $(s ask_ssh_pass)" _in; echo
-    if [[ -z "$_in" ]]; then
-        ROOT_SSH_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
-        info "  SSH пароль (авто): ${BOLD}${ROOT_SSH_PASS}${NC}"
-    else
-        ROOT_SSH_PASS="$_in"
-    fi
+    read -rp "  $(s ask_label)" _in; SERVER_LABEL="${_in:-$(hostname -s)}"
+
+    # Username
+    while true; do
+        read -rp "  $(s ask_user_name)" _in
+        ADMIN_USER="${_in:-vpnadmin}"
+        ADMIN_USER="${ADMIN_USER// /}"
+        [[ "$ADMIN_USER" == "root" ]] && { warn "  $(s err_user_root)"; continue; }
+        [[ ${#ADMIN_USER} -lt 3 ]]    && { warn "  Минимум 3 символа"; continue; }
+        break
+    done
+
+    # Password with confirmation
+    while true; do
+        read -rsp "  $(s ask_user_pass)" _p1; echo
+        [[ ${#_p1} -lt 12 ]] && { warn "  $(s err_pass_short)"; continue; }
+        read -rsp "  $(s ask_user_pass2)" _p2; echo
+        [[ "$_p1" != "$_p2" ]] && { warn "  $(s err_pass_mismatch)"; continue; }
+        ADMIN_PASS="$_p1"
+        break
+    done
+    echo ""
+    info "  Запишите: ${BOLD}${ADMIN_USER} : ${ADMIN_PASS}${NC}"
+    read -rp "  Записали? Enter: " _
+
+    read -rp "  $(s ask_ssh)" _in; NEW_SSH_PORT="${_in:-2222}"
 
     echo ""
     info "  $(s inbound_hint)"
@@ -255,9 +283,10 @@ prompt_server() {
     [[ -n "$_in" ]] && IFS=' ' read -ra INBOUND_PORTS <<< "$_in"
 
     sep
-    info "  Сервер:   $SERVER_LABEL"
-    info "  SSH порт: $NEW_SSH_PORT"
-    [[ ${#INBOUND_PORTS[@]} -gt 0 ]] && info "  Inbounds: ${INBOUND_PORTS[*]}"
+    info "  Сервер:      $SERVER_LABEL"
+    info "  Пользователь: $ADMIN_USER"
+    info "  SSH порт:    $NEW_SSH_PORT"
+    [[ ${#INBOUND_PORTS[@]} -gt 0 ]] && info "  Inbounds:    ${INBOUND_PORTS[*]}"
     sep
     read -rp "  $(s confirm)" _c
     [[ "${_c,,}" == "y" ]] || die "$(s aborted)"
@@ -336,85 +365,145 @@ update_system() {
     log "Packages ready."
 }
 
+create_admin_user() {
+    log "Создаю пользователя $ADMIN_USER..."
+    if id "$ADMIN_USER" &>/dev/null; then
+        echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
+        log "Пользователь существует — пароль обновлён"
+    else
+        useradd -m -s /bin/bash "$ADMIN_USER" || die "useradd failed"
+        echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
+        log "Пользователь $ADMIN_USER создан"
+    fi
+    usermod -aG sudo "$ADMIN_USER"
+    echo "$ADMIN_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$ADMIN_USER"
+    chmod 440 /etc/sudoers.d/"$ADMIN_USER"
+}
+
 harden_sysctl() {
-    log "sysctl hardening..."
-    cat > /etc/sysctl.d/99-3xui.conf << 'EOF'
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
+    log "sysctl + лимиты + swap..."
+
+    sed -i '/# === 3XUI ===/,/# === END 3XUI ===/d' /etc/sysctl.conf 2>/dev/null || true
+    cat >> /etc/sysctl.conf << 'EOF'
+
+# === 3XUI ===
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_synack_retries = 2
 net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv6.conf.all.accept_redirects = 0
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
-net.ipv4.conf.all.log_martians = 1
-net.ipv4.conf.default.log_martians = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv6.conf.default.accept_redirects = 0
+fs.file-max = 2097152
 fs.protected_hardlinks = 1
 fs.protected_symlinks = 1
 fs.suid_dumpable = 0
-net.core.somaxconn = 65535
-net.core.netdev_max_backlog = 250000
-net.ipv4.tcp_max_tw_buckets = 1440000
-net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_keepalive_time = 600
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_rmem = 4096 87380 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
+kernel.randomize_va_space = 2
+vm.swappiness = 10
+# === END 3XUI ===
 EOF
-    sysctl -p /etc/sysctl.d/99-3xui.conf > /dev/null
+    sysctl -p > /dev/null 2>&1 || true
+
+    # File descriptor limits
+    cat > /etc/security/limits.d/99-3xui.conf << 'EOF'
+*    soft nofile 1048576
+*    hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/limits.conf << 'EOF'
+[Manager]
+DefaultLimitNOFILE=1048576
+EOF
+
+    # Swap — защита от OOM на VPS с RAM < 4GB
+    local ram_mb
+    ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+    if [[ $ram_mb -lt 4096 ]] && ! swapon -s | grep -q swap; then
+        log "RAM ${ram_mb}MB < 4GB — создаю swap..."
+        fallocate -l "${ram_mb}M" /swapfile 2>/dev/null \
+            || dd if=/dev/zero of=/swapfile bs=1M count="$ram_mb"
+        chmod 600 /swapfile
+        mkswap /swapfile > /dev/null
+        swapon /swapfile
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        log "Swap ${ram_mb}MB создан"
+    fi
 }
 
 harden_ssh() {
     log "SSH hardening (port $NEW_SSH_PORT)..."
 
-    # Ubuntu 24.04 uses 'ssh.service'; older Ubuntu/Debian use 'sshd.service'
-    if systemctl list-units --full --all 2>/dev/null | grep -q '\bsshd\.service\b'; then
-        SSH_SVC="sshd"
-    else
-        SSH_SVC="ssh"
-    fi
-    log "SSH service name: $SSH_SVC"
+    cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%s)" 2>/dev/null || true
 
-    cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%s)"
-    mkdir -p /etc/ssh/sshd_config.d
-    cat > /etc/ssh/sshd_config.d/99-hardened.conf << EOF
+    # Ubuntu 24 fix: отключаем ssh.socket, включаем ssh.service
+    systemctl stop    ssh.socket 2>/dev/null || true
+    systemctl disable ssh.socket 2>/dev/null || true
+    systemctl mask    ssh.socket 2>/dev/null || true
+    systemctl unmask  ssh.service 2>/dev/null || true
+    systemctl enable  ssh.service 2>/dev/null || true
+    SSH_SVC="ssh"
+
+    # Временный конфиг — оба порта открыты пока не подтверждено
+    mkdir -p /run/sshd
+    cat > /etc/ssh/sshd_config << EOF
 Port $NEW_SSH_PORT
-PermitRootLogin yes
-PasswordAuthentication yes
-PubkeyAuthentication yes
-MaxAuthTries 3
-MaxSessions 5
-LoginGraceTime 30
-X11Forwarding no
-AllowAgentForwarding no
-AllowTcpForwarding no
-PermitEmptyPasswords no
-ClientAliveInterval 300
-ClientAliveCountMax 2
-IgnoreRhosts yes
-HostbasedAuthentication no
-PermitUserEnvironment no
+Port $OLD_SSH_PORT
+AddressFamily inet
+ListenAddress 0.0.0.0
 Protocol 2
-UsePAM yes
+LoginGraceTime 60
+PermitRootLogin yes
+StrictModes yes
+MaxAuthTries 5
+MaxSessions 10
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+X11Forwarding no
+PrintMotd no
+ClientAliveInterval 120
+ClientAliveCountMax 10
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+AllowUsers $ADMIN_USER root
 EOF
-    grep -q "^Include /etc/ssh/sshd_config.d" /etc/ssh/sshd_config \
-        || echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
     sshd -t || die "SSH config test failed"
+    systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service 2>/dev/null
+    sleep 3
 
-    # Set root password
-    echo "root:${ROOT_SSH_PASS}" | chpasswd
-    log "Root SSH password set."
+    # Проверяем что новый порт открылся
+    if ! ss -tlnp 2>/dev/null | grep -qE ":${NEW_SSH_PORT}\b"; then
+        cp /etc/ssh/sshd_config.bak.* /etc/ssh/sshd_config 2>/dev/null || true
+        systemctl unmask ssh.socket 2>/dev/null || true
+        systemctl enable --now ssh.socket 2>/dev/null || true
+        die "SSH не открыл порт $NEW_SSH_PORT — откат"
+    fi
+
+    # Сильные шифры (drop-in)
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config.d/99-ciphers.conf << 'EOF'
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+KexAlgorithms curve25519-sha256@libssh.org,curve25519-sha256,diffie-hellman-group-exchange-sha256
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+EOF
+    sshd -t || true
+    log "SSH слушает порты $NEW_SSH_PORT и $OLD_SSH_PORT (временно)"
 }
 
 setup_firewall() {
@@ -485,23 +574,40 @@ EOF
 
 setup_fail2ban() {
     log "Fail2ban..."
-    cat > /etc/fail2ban/jail.d/00-defaults.local << 'EOF'
+    cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-banaction = iptables-multiport
 bantime   = 86400
 findtime  = 600
-maxretry  = 5
+maxretry  = 3
+backend   = systemd
 ignoreip  = 127.0.0.1/8 ::1
-EOF
-    cat > /etc/fail2ban/jail.d/01-sshd.local << EOF
+banaction = ufw
+
 [sshd]
 enabled  = true
 port     = $NEW_SSH_PORT
+filter   = sshd
+logpath  = %(sshd_log)s
 maxretry = 3
-bantime  = 86400
-findtime = 300
-EOF
-    cat > /etc/fail2ban/jail.d/02-3xui.local << EOF
+bantime  = 604800
+
+[sshd-aggressive]
+enabled  = true
+port     = $NEW_SSH_PORT
+filter   = sshd[mode=aggressive]
+logpath  = %(sshd_log)s
+maxretry = 2
+findtime = 60
+bantime  = 2592000
+
+[recidive]
+enabled  = true
+filter   = recidive
+logpath  = /var/log/fail2ban.log
+maxretry = 3
+findtime = 86400
+bantime  = 2419200
+
 [3xui]
 enabled  = true
 port     = $PANEL_NGINX_PORT
@@ -759,8 +865,8 @@ print_panel_summary() {
     {
         echo "3x-ui install — $(date)"
         echo "Server:     $SERVER_LABEL ($ip)"
-        echo "SSH:        ssh -p $NEW_SSH_PORT root@$ip"
-        echo "SSH pass:   $ROOT_SSH_PASS"
+        echo "SSH:        ssh -p $NEW_SSH_PORT $ADMIN_USER@$ip"
+        echo "SSH pass:   $ADMIN_PASS"
         echo "Panel URL:  https://$ip:$PANEL_NGINX_PORT${PANEL_PATH}/"
         echo "Username:   $PANEL_USER"
         echo "Password:   $PANEL_PASS"
@@ -782,10 +888,10 @@ print_panel_summary() {
     echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${CYAN}──────────────────── SSH ─────────────────────────────${NC}"
-    echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
-    echo -e "  Порт:     ${BOLD}$NEW_SSH_PORT${NC}"
-    echo -e "  Пароль:   ${BOLD}${ROOT_SSH_PASS}${NC}"
-    echo -e "  Вход:     пароль + fail2ban (3 попытки → бан 24ч)"
+    echo -e "  Команда:      ${BOLD}ssh -p $NEW_SSH_PORT $ADMIN_USER@$ip${NC}"
+    echo -e "  Пользователь: ${BOLD}$ADMIN_USER${NC}"
+    echo -e "  Пароль:       ${BOLD}$ADMIN_PASS${NC}"
+    echo -e "  Вход:         пароль + fail2ban (3 попытки → бан 7 дней)"
     echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${CYAN}──────────────────── Открытые порты ─────────────────${NC}"
@@ -808,38 +914,63 @@ verify_ssh() {
     local ip
     ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "YOUR_IP")
 
-    sep
-    warn "  Перезапускаю SSH на порту $NEW_SSH_PORT..."
-    if systemctl restart "$SSH_SVC" 2>/dev/null; then
-        log "  SSH перезапущен успешно."
-    else
-        warn "  Не удалось перезапустить $SSH_SVC — попробуй вручную: systemctl restart $SSH_SVC"
-    fi
-
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║        СЕРВЕР ГОТОВ — ПРОВЕРЬ SSH                ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  Сервер:   ${BOLD}$SERVER_LABEL${NC}  ($ip)"
-    echo -e "  Команда:  ${BOLD}ssh -p $NEW_SSH_PORT root@$ip${NC}"
-    echo -e "  Пароль:   ${BOLD}${ROOT_SSH_PASS}${NC}"
+    echo -e "  Сервер:       ${BOLD}$SERVER_LABEL${NC}  ($ip)"
+    echo -e "  Пользователь: ${BOLD}$ADMIN_USER${NC}"
+    echo -e "  Пароль:       ${BOLD}$ADMIN_PASS${NC}"
+    echo -e "  SSH команда:  ${BOLD}ssh -p $NEW_SSH_PORT $ADMIN_USER@$ip${NC}"
     echo ""
-    echo -e "${YELLOW}  Открой НОВУЮ вкладку и подключись на порту $NEW_SSH_PORT!${NC}"
-    echo -e "${YELLOW}  Не закрывай эту сессию пока не убедишься что SSH работает.${NC}"
+    echo -e "${YELLOW}  Открой НОВОЕ окно и войди на порту $NEW_SSH_PORT!${NC}"
+    echo -e "${YELLOW}  Старый порт $OLD_SSH_PORT пока тоже открыт.${NC}"
     echo ""
-    read -rp "  SSH на порту $NEW_SSH_PORT работает? [y/N]: " _ok
-    if [[ "${_ok,,}" != "y" ]]; then
-        warn "  Откатываю SSH на порт $OLD_SSH_PORT..."
-        sed -i "s/^Port $NEW_SSH_PORT/Port $OLD_SSH_PORT/" \
-            /etc/ssh/sshd_config.d/99-hardened.conf 2>/dev/null || true
-        systemctl restart "$SSH_SVC" 2>/dev/null || true
-        ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
-        warn "  SSH откатан на порт $OLD_SSH_PORT. Разберись с SSH и запусти скрипт заново."
-        exit 1
-    fi
-    log "SSH проверен. Удаляю старый порт 22 из UFW."
-    ufw delete allow "22/tcp" 2>/dev/null || true
+
+    while true; do
+        read -rp "  SSH на порту $NEW_SSH_PORT работает? [y/n]: " _ok
+        if [[ "${_ok,,}" == "y" ]]; then break; fi
+        if [[ "${_ok,,}" == "n" ]]; then
+            warn "  Откат SSH на порт $OLD_SSH_PORT..."
+            cat > /etc/ssh/sshd_config << EOF
+Port $OLD_SSH_PORT
+PermitRootLogin yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+EOF
+            systemctl restart ssh.service 2>/dev/null || true
+            ufw delete allow "${NEW_SSH_PORT}/tcp" 2>/dev/null || true
+            die "SSH откатан. Разберись с подключением и запусти скрипт заново."
+        fi
+    done
+
+    # Финальный конфиг — только новый порт, root запрещён
+    cat > /etc/ssh/sshd_config << EOF
+Port $NEW_SSH_PORT
+AddressFamily inet
+ListenAddress 0.0.0.0
+Protocol 2
+LoginGraceTime 30
+PermitRootLogin no
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 10
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+X11Forwarding no
+PrintMotd no
+DebianBanner no
+ClientAliveInterval 120
+ClientAliveCountMax 10
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+AllowUsers $ADMIN_USER
+EOF
+    sshd -t && systemctl restart ssh.service 2>/dev/null
+    ufw delete allow "${OLD_SSH_PORT}/tcp" 2>/dev/null || true
+    log "SSH финал: порт $NEW_SSH_PORT, root запрещён, старый порт закрыт."
     sep
 }
 
@@ -847,12 +978,13 @@ run_panel() {
     # ── PHASE 1: Server hardening ──────────────────────────────
     prompt_server
     update_system
+    create_admin_user
     harden_sysctl
     harden_ssh
     setup_firewall
     setup_fail2ban
     setup_autoupdates
-    verify_ssh          # show SSH info + ask user to verify before continuing
+    verify_ssh          # подтверждение SSH → финальный конфиг
 
     # ── PHASE 2: Panel installation ────────────────────────────
     prompt_panel

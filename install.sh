@@ -38,11 +38,40 @@ IFS=$'\n\t'
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-log()  { echo -e "${GREEN}[+]${NC} $*"; }
-info() { echo -e "${BLUE}[i]${NC} $*"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+INSTALL_LOG="/tmp/3xui-install.log"
+
+log()  { echo -e "${GREEN}[+]${NC} $*" | tee -a "$INSTALL_LOG"; }
+info() { echo -e "${BLUE}[i]${NC} $*" | tee -a "$INSTALL_LOG"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*" | tee -a "$INSTALL_LOG"; }
 die()  { echo -e "${RED}[x]${NC} $*" >&2; exit 1; }
 sep()  { echo -e "${CYAN}──────────────────────────────────────────────${NC}"; }
+
+# Redirect all output to log file while keeping it on screen
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+
+# Error trap — shows exactly what failed and where
+error_handler() {
+    local exit_code=$1
+    local line=$2
+    local command=$3
+    echo ""
+    echo -e "${RED}════════════════════════════════════════════════${NC}"
+    echo -e "${RED}  ОШИБКА УСТАНОВКИ${NC}"
+    echo -e "${RED}════════════════════════════════════════════════${NC}"
+    echo -e "  Команда:  ${BOLD}${command}${NC}"
+    echo -e "  Строка:   ${BOLD}${line}${NC}"
+    echo -e "  Код:      ${BOLD}${exit_code}${NC}"
+    echo ""
+    echo -e "  Лог установки: ${BOLD}${INSTALL_LOG}${NC}"
+    echo -e "  Последние строки лога:"
+    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
+    tail -n 20 "$INSTALL_LOG" 2>/dev/null || true
+    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "  Полный лог: ${BOLD}cat ${INSTALL_LOG}${NC}"
+    echo -e "${RED}════════════════════════════════════════════════${NC}"
+}
+trap 'error_handler $? $LINENO "$BASH_COMMAND"' ERR
 
 # =============================================================
 # TRANSLATIONS

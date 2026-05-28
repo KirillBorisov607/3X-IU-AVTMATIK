@@ -7,23 +7,28 @@
 
 # Re-launch inside screen so SSH restart doesn't kill the session
 if [[ -z "${INSIDE_SCREEN:-}" ]]; then
-    if ! command -v screen &>/dev/null; then
-        apt-get install -y -qq screen 2>/dev/null || true
-    fi
+    # Update apt cache first so screen can be installed on a fresh server
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq screen 2>/dev/null || true
+
+    TMPSCRIPT=$(mktemp /tmp/3xui-install-XXXX.sh)
+    # When piped via bash <(curl ...), $0 is a file descriptor — download fresh copy
+    curl -fsSL \
+        https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh \
+        -o "$TMPSCRIPT"
+    chmod +x "$TMPSCRIPT"
+
     if command -v screen &>/dev/null; then
-        export INSIDE_SCREEN=1
-        # Save script to temp file (needed when piped from curl)
-        TMPSCRIPT=$(mktemp /tmp/3xui-install-XXXX.sh)
-        cat "$0" > "$TMPSCRIPT" 2>/dev/null || curl -Ls \
-            https://raw.githubusercontent.com/KirillBorisov607/3X-IU-AVTMATIK/master/install.sh \
-            -o "$TMPSCRIPT"
-        chmod +x "$TMPSCRIPT"
         echo ""
-        echo "  Launching inside screen session '3xui-install'..."
-        echo "  If connection drops: ssh back and run --> screen -r 3xui-install"
+        echo "  Запуск в screen '3xui-install'..."
+        echo "  Если соединение оборвётся: подключись и выполни --> screen -r 3xui-install"
         echo ""
-        sleep 2
-        exec screen -S 3xui-install bash "$TMPSCRIPT"
+        sleep 1
+        INSIDE_SCREEN=1 exec screen -S 3xui-install bash "$TMPSCRIPT"
+    else
+        # screen unavailable — run directly (session may drop on SSH restart)
+        echo "  [!] screen недоступен, запуск без защиты от разрыва соединения"
+        INSIDE_SCREEN=1 exec bash "$TMPSCRIPT"
     fi
 fi
 
@@ -259,12 +264,10 @@ update_system() {
     mkdir -p /etc/needrestart/conf.d
     echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-auto.conf
 
-    apt-get update -qq
+    # apt-get update already ran in the screen-relaunch block
     apt-get upgrade -y \
         -o Dpkg::Options::="--force-confold" \
-        -o Dpkg::Options::="--force-confdef" \
-        -o APT::Get::AllowUnauthenticated=false \
-        2>&1 | grep -v "^(Reading|Preparing|Unpacking|Setting|Processing)" || true
+        -o Dpkg::Options::="--force-confdef"
     apt-get install -y \
         -o Dpkg::Options::="--force-confold" \
         curl wget git vim htop unzip \

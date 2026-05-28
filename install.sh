@@ -16,23 +16,39 @@ if [[ -z "${INSIDE_SCREEN:-}" ]]; then
         -o "$TMPSCRIPT"
     chmod +x "$TMPSCRIPT"
 
+    # Write a wrapper that exports INSIDE_SCREEN before running the main script.
+    # Embedding "VAR=1 cmd" in a tmux command string is unreliable — the shell
+    # tmux uses to interpret it may not export the variable properly.
+    WRAPPER=$(mktemp /tmp/3xui-start-XXXX.sh)
+    cat > "$WRAPPER" << WEOF
+#!/usr/bin/env bash
+export INSIDE_SCREEN=1
+bash "$TMPSCRIPT"
+EXIT_CODE=\$?
+if [[ \$EXIT_CODE -ne 0 ]]; then
+    echo ""
+    echo "=== Script exited with code \$EXIT_CODE ==="
+    echo "Check: cat /tmp/3xui-FAILED.txt"
+    echo "Full log: cat /tmp/3xui-install.log"
+    sleep 15
+fi
+WEOF
+    chmod +x "$WRAPPER"
+
     if command -v tmux &>/dev/null; then
         echo ""
         echo "  Запуск в tmux (сессия: 3xui)..."
         echo "  Если соединение оборвётся: переподключись и выполни --> tmux attach -t 3xui"
         echo ""
-        # Kill stale session from a previous run (if any)
         tmux kill-session -t 3xui 2>/dev/null || true
-        # INSIDE_SCREEN must be inside the command string — tmux doesn't inherit
-        # env-var prefixes; the variable would be unset inside the new session
-        tmux new-session -s 3xui "INSIDE_SCREEN=1 bash $TMPSCRIPT"
+        tmux new-session -s 3xui "bash $WRAPPER"
         exit 0
     elif command -v screen &>/dev/null; then
         echo ""
         echo "  Запуск в screen (сессия: 3xui-install)..."
         echo "  Если соединение оборвётся: переподключись и выполни --> screen -r 3xui-install"
         echo ""
-        screen -S 3xui-install bash -c "INSIDE_SCREEN=1 bash $TMPSCRIPT"
+        screen -S 3xui-install "bash $WRAPPER"
         exit 0
     else
         echo "  [!] tmux/screen недоступны, запуск напрямую"
